@@ -128,6 +128,8 @@ class Backtest:
             daily_profit_target = getattr(strategy, "daily_profit_target", None)
         self.daily_loss_limit = daily_loss_limit
         self.daily_profit_target = daily_profit_target
+        self.news_flatten = (getattr(strategy, "news_filter", False)
+                             and getattr(strategy, "news_flatten", False))
         self.progress = progress
         self._in_bar_cb = False
 
@@ -164,6 +166,21 @@ class Backtest:
         strat = self.strategy
         strat._broker = self.broker
         strat._account = self.account
+
+        # high-impact news filter: load the calendar once; entry helpers on the
+        # strategy consult strat._news, and the engine flattens on window entry
+        # when news_flatten is set.
+        strat._news = None
+        if getattr(strat, "news_filter", False):
+            from .news import NewsCalendar
+            strat._news = NewsCalendar.load(
+                getattr(strat, "news_csv", None) or None,
+                currencies=getattr(strat, "news_currencies", None))
+            if self.progress:
+                print(f"  [news] {len(strat._news)} high-impact events "
+                      f"({','.join(strat.news_currencies)}), "
+                      f"block -{strat.news_pre_min:g}/+{strat.news_post_min:g} min"
+                      + (" + flatten" if self.news_flatten else ""))
 
         # secondary (multi-timeframe) series + optional on_tick. Both stay
         # entirely off the fast path unless a strategy opts in.
@@ -247,6 +264,12 @@ class Backtest:
                         hist.append(bar)
                         bar_index += 1
                         strat._now_ts = bar.ts
+                        # flatten before high-impact news (entries stay gated by
+                        # strat.news_blocked in the order helpers)
+                        if (self.news_flatten and self.account.position != 0
+                                and strat.news_blocked(bar.ts)):
+                            self.broker.cancel_all()
+                            self.broker.flatten(int(bars.i1[j]) - 1, tag="news")
                         if sec_periods:
                             self._advance_secondary(
                                 strat, bar.ts, sec_periods, sec_bars,

@@ -36,6 +36,18 @@ def main() -> None:
                     help="extra slippage in ticks on market/stop fills")
     ap.add_argument("--daily-loss-limit", type=float, default=None, metavar="$",
                     help="flatten and stop trading for the day at this loss")
+    ap.add_argument("--news-filter", action="store_true",
+                    help="block entries around high-impact (FF red folder) news")
+    ap.add_argument("--news-pre", type=float, default=None, metavar="MIN",
+                    help="minutes before an event to stop entering (default 5)")
+    ap.add_argument("--news-post", type=float, default=None, metavar="MIN",
+                    help="minutes after an event to resume entering (default 5)")
+    ap.add_argument("--news-currencies", default=None, metavar="USD,EUR",
+                    help="event currencies to honor (default USD)")
+    ap.add_argument("--news-flatten", action="store_true",
+                    help="also flatten an open position entering a news window")
+    ap.add_argument("--news-csv", default=None,
+                    help="override the news calendar CSV path")
     ap.add_argument("--mc", type=int, default=2000, metavar="N",
                     help="Monte Carlo simulations (default 2000; 0 disables)")
     ap.add_argument("--mc-target", type=float, default=None, metavar="$",
@@ -48,6 +60,19 @@ def main() -> None:
     args = ap.parse_args()
 
     strat = load_strategy(args.strategy)
+    if args.news_filter:
+        strat.news_filter = True
+        if args.news_pre is not None:
+            strat.news_pre_min = args.news_pre
+        if args.news_post is not None:
+            strat.news_post_min = args.news_post
+        if args.news_currencies:
+            strat.news_currencies = tuple(c.strip().upper()
+                                          for c in args.news_currencies.split(","))
+        if args.news_flatten:
+            strat.news_flatten = True
+        if args.news_csv:
+            strat.news_csv = args.news_csv
     prop = None
     if args.prop_threshold > 0:
         prop = PropFirmConfig(threshold=args.prop_threshold,

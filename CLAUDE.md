@@ -66,6 +66,19 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
 - **sizing.py** — Carver vol targeting; `Strategy.vol_target_contracts`
   (expects a DAILY ATR). Engine `daily_loss_limit` flattens + stands down
   for the day (exit tag "dll", days listed in Result.dll_days).
+- **news.py** — `NewsCalendar` over the ForexFactory **red folder**
+  (high-impact) dataset in `data/ff_high_impact_news.csv` (gathered by
+  `tools/fetch_ff_news.py`; matched on FF's UTC `dateline`, so DST-exact).
+  `Strategy.news_filter` gates NEW entries within `[-news_pre_min,
+  +news_post_min]` of an event (currencies filtered, default USD); the
+  `buy*/sell*` helpers return None when blocked — **exits/protective legs are
+  never gated**. `news_flatten` force-flattens on window entry (engine, exit
+  tag "news"). CLI `--news-filter/--news-pre/--news-post/--news-currencies/
+  --news-flatten/--news-csv`. Off by default (champion re-runs bit-identical).
+  Motivating case: the Drew GZK request — but note a literal ±5 min USD
+  red-folder filter does NOT recover his $4k (it slightly LOWERS net by
+  dropping winners near the 10:00 ET releases), so the news filter is not the
+  explanation for that gap.
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine

@@ -166,6 +166,38 @@ also cached per trade for order-imbalance (OIB) research.
 - `--daily-loss-limit 600` — flatten and stand down for the rest of the day
   when the day's loss touches the limit; hit days are listed in the summary.
 
+## News filter (high-impact / ForexFactory "red folder" events)
+
+Block new entries around high-impact economic releases (FOMC, CPI, NFP, …).
+The event calendar is `data/ff_high_impact_news.csv` — ForexFactory **red
+folder** (High impact) events, gathered by `tools/fetch_ff_news.py` (see
+`data/README.md` for the schema, provenance, and refresh cadence; run it
+weekly to keep the file current, or with `--start/--end` to backfill a range).
+
+Turn it on per strategy or per run:
+
+```python
+class MyStrat(Strategy):
+    news_filter = True            # off by default
+    news_pre_min = 5              # stop entering 5 min before an event
+    news_post_min = 5             # resume 5 min after
+    news_currencies = ("USD",)    # which events matter (USD for MNQ/ES)
+    news_flatten = False          # also flatten an open position on window entry
+    news_csv = None               # None -> data/ff_high_impact_news.csv
+```
+
+```
+--news-filter [--news-pre 5] [--news-post 5] [--news-currencies USD,EUR]
+              [--news-flatten] [--news-csv path]
+```
+
+Entries submitted inside a window are suppressed (the `buy*/sell*` helpers
+return `None`); **protective stops, targets, and exits are never gated**, so a
+position opened before the window still manages itself normally. Call
+`self.news_blocked()` in custom entry logic to gate a discretionary decision.
+Event times are matched on ForexFactory's UTC `dateline`, so the window is
+timezone-exact regardless of DST. The run prints how many events loaded.
+
 ## Parameter sweeps
 
 ```
@@ -247,8 +279,10 @@ serially correlated (|r| > 0.2, per Davey).
 ```
 python cli.py <strategy.py> [--symbol MNQ] [--period 1m] [--start D] [--end D]
               [--balance 50000] [--prop-threshold 2000] [--prop-halt]
-              [--daily-loss-limit 600] [--slippage 0] [--mc 2000]
-              [--mc-target 3000] [--out report.html] [--no-report] [--data-root P]
+              [--daily-loss-limit 600] [--news-filter [--news-pre 5]
+              [--news-post 5] [--news-currencies USD] [--news-flatten]]
+              [--slippage 0] [--mc 2000] [--mc-target 3000] [--out report.html]
+              [--no-report] [--data-root P]
 ```
 
 `--period` accepts any bar type above (`1m`, `500t`, `r8-4`, `s64-16`, `tb120`).

@@ -4,6 +4,7 @@ from .contracts import SPECS, ContractSpec, get_spec
 from .engine import Backtest, Result
 from .indicators import (ATR, EMA, RSI, SMA, Bollinger, EfficiencyRatio,
                           Highest, Lowest)
+from .news import NewsCalendar
 from .orders import BUY, SELL, Fill, Order, OrderType
 from .sizing import carver_contracts
 from .strategy import Bar, BarHistory, Strategy
@@ -13,6 +14,6 @@ __all__ = [
     "BUY",
     "carver_contracts",
     "ContractSpec", "EfficiencyRatio", "EMA", "Fill", "get_spec", "Highest",
-    "Lowest", "Order",
+    "Lowest", "NewsCalendar", "Order",
     "OrderType", "Result", "RSI", "SELL", "SMA", "SPECS", "Strategy",
 ]

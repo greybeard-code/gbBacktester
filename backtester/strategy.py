@@ -111,12 +111,25 @@ class Strategy:
     # completed secondary bars via self.secondary(period) — only bars that
     # closed at/before the current primary bar are present (no look-ahead).
     secondary_periods: list[str] = []
+    # High-impact news filter (ForexFactory "red folder" events). When
+    # news_filter is True the engine loads the calendar and NEW entries are
+    # blocked within [event - news_pre_min, event + news_post_min]; protective
+    # stops/targets and exits are never gated. news_flatten additionally
+    # force-flattens an open position on entering a window. news_csv defaults
+    # to data/ff_high_impact_news.csv; refresh it with tools/fetch_ff_news.py.
+    news_filter: bool = False
+    news_pre_min: float = 5.0
+    news_post_min: float = 5.0
+    news_currencies: tuple[str, ...] = ("USD",)
+    news_flatten: bool = False
+    news_csv: str | None = None
 
     def __init__(self):
         self._broker = None      # wired by the engine
         self._account = None
         self._now_ts = 0         # current bar close ts, set by the engine
         self._secondary = {}     # period -> BarHistory, wired by the engine
+        self._news = None        # NewsCalendar | None, wired by the engine
 
     # ---- lifecycle hooks ----
     def on_start(self) -> None: ...
@@ -164,11 +177,24 @@ class Strategy:
         """True if the Apex min-hold has elapsed (or is disabled)."""
         return self.min_hold_s <= 0 or self.position_age_s() >= self.min_hold_s
 
+    def news_blocked(self, ts: int | None = None) -> bool:
+        """True if now (or `ts`, ns UTC) is inside a high-impact news window.
+        Always False unless news_filter is on and the engine loaded a calendar.
+        Entry helpers consult this automatically; call it directly for custom
+        entry logic or to gate a discretionary decision."""
+        if self._news is None:
+            return False
+        t = self._now_ts if ts is None else ts
+        return self._news.blocked(t, self.news_pre_min * 60.0,
+                                  self.news_post_min * 60.0)
+
     # ---- orders ----
-    def buy(self, qty: int | None = None, tag: str = "") -> Order:
+    # Entry helpers return None (no order submitted) when the news filter is
+    # active and now is inside a high-impact window. Exits are never gated.
+    def buy(self, qty: int | None = None, tag: str = "") -> Order | None:
         return self._enter(BUY, qty, tag)
 
-    def sell(self, qty: int | None = None, tag: str = "") -> Order:
+    def sell(self, qty: int | None = None, tag: str = "") -> Order | None:
         return self._enter(SELL, qty, tag)
 
     def buy_bracket(self, qty: int | None = None, stop_ticks: float | None = None,
@@ -183,28 +209,36 @@ class Strategy:
 
     def buy_limit(self, price: float, qty: int | None = None, tag: str = "",
                   stop_ticks: float | None = None,
-                  target_ticks: float | None = None) -> Order:
+                  target_ticks: float | None = None) -> Order | None:
+        if self.news_blocked():
+            return None
         o = Order(side=BUY, qty=qty or self.qty, type=OrderType.LIMIT,
                   price=price, tag=tag)
         return self._broker.submit(o, BracketSpec(stop_ticks, target_ticks))
 
     def sell_limit(self, price: float, qty: int | None = None, tag: str = "",
                    stop_ticks: float | None = None,
-                   target_ticks: float | None = None) -> Order:
+                   target_ticks: float | None = None) -> Order | None:
+        if self.news_blocked():
+            return None
         o = Order(side=SELL, qty=qty or self.qty, type=OrderType.LIMIT,
                   price=price, tag=tag)
         return self._broker.submit(o, BracketSpec(stop_ticks, target_ticks))
 
     def buy_stop(self, price: float, qty: int | None = None, tag: str = "",
                  stop_ticks: float | None = None,
-                 target_ticks: float | None = None) -> Order:
+                 target_ticks: float | None = None) -> Order | None:
+        if self.news_blocked():
+            return None
         o = Order(side=BUY, qty=qty or self.qty, type=OrderType.STOP,
                   price=price, tag=tag)
         return self._broker.submit(o, BracketSpec(stop_ticks, target_ticks))
 
     def sell_stop(self, price: float, qty: int | None = None, tag: str = "",
                   stop_ticks: float | None = None,
-                  target_ticks: float | None = None) -> Order:
+                  target_ticks: float | None = None) -> Order | None:
+        if self.news_blocked():
+            return None
         o = Order(side=SELL, qty=qty or self.qty, type=OrderType.STOP,
                   price=price, tag=tag)
         return self._broker.submit(o, BracketSpec(stop_ticks, target_ticks))
@@ -285,7 +319,9 @@ class Strategy:
         self._broker.cancel_all()
 
     def _enter(self, side: int, qty: int | None, tag: str,
-               bracket: BracketSpec | None = None) -> Order:
+               bracket: BracketSpec | None = None) -> Order | None:
+        if self.news_blocked():
+            return None
         o = Order(side=side, qty=qty or self.qty, type=OrderType.MARKET,
                   tag=tag or ("long" if side == BUY else "short"))
         return self._broker.submit(o, bracket)
