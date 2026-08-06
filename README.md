@@ -49,7 +49,8 @@ from backtester import EMA, Strategy
 
 class MyStrat(Strategy):
     symbol = "MNQ"
-    period = "1m"                    # time: 30s/1m/5m; tick: 500t; renko: r8
+    period = "1m"                    # time 1m; tick 500t; renko r8-4 / saber
+                                     # s64-16; tbars tb120 (see Bar types)
     session = ("09:30", "16:00")     # US/Eastern; None = full day
     flat_at_session_end = True
     qty = 2
@@ -93,20 +94,40 @@ worked example (six independent signal engines voting per bar).
 
 ## Bar types
 
-- **Time** — `30s`, `1m`, `5m`, `1h` (bar timestamp = close time, NT8-style;
-  empty bars omitted).
-- **Tick** — `500t`: fixed trade-count bars.
-- **Renko (ninZaRenko)** — `r8-4`: brick size 8 ticks (every bar's body
-  height), trend threshold 4 ticks (with-trend close distance from the
-  previous close). `r8` defaults trend to brick/2. Implements the published
-  ninZaRenko manual: open offset = brick − trend (bars overlap), reversal
-  threshold = 2·brick − trend, equal bodies both directions. Manual's
-  recommended configs: 8-4, 15-5, 12-4, 20-5, 30-10. High/low include the
-  synthetic open — matching what NT8 indicators see on ninZaRenko bars.
+Set the bar type with the `period` string — on the strategy (`period = "r8-4"`)
+or per run (`--period r8-4`). Five families are supported (`backtester/
+strategy.py::parse_barspec`):
+
+| Syntax | Kind | Meaning |
+|---|---|---|
+| `30s` `1m` `5m` `1h` | **Time** | Fixed clock interval. Bar timestamp = close time (NT8-style); empty bars omitted. A bare integer (`90`) is seconds. |
+| `500t` | **Tick** | Fixed trade-count bars (500 trades per bar). |
+| `r8-4` (`r8`) | **Renko — ninZaRenko** | Brick 8 ticks (body height), trend threshold 4 ticks (with-trend close distance from the prior close). `r8` defaults trend to brick/2. Constraint: trend ≤ brick. |
+| `s64-16` (`s64-16-2`) | **Renko — SaberRenko** | Bar Size B = 64 ticks, Offset O = 16, optional Time Filter in seconds (3rd field, default 1). Constraints: O ≤ B and B a multiple of O (keeps closes on the renko grid). |
+| `tb120` | **TBars** | One "Speed Settings" parameter N = 120 ticks; the port derives trend N//2, reversal N·2, open offset N — so a reversal costs 4× a continuation. N ≥ 2. |
+
+**ninZaRenko** (`r8-4`) implements the published ninZaRenko manual: open offset
+= brick − trend (bars overlap), reversal threshold = 2·brick − trend, equal
+bodies both directions. High/low include the synthetic open, matching what NT8
+indicators see. Recommended configs: 8-4, 15-5, 12-4, 20-5, 30-10. Validated
+bar-for-bar against five real NT8 chart exports — see `research/ninZaRenko_spec.md`.
+
+**SaberRenko** (`s64-16`) is a second vendor renko variant with an independent
+offset parameter and an optional time filter; geometry and parity notes are in
+`research/SaberRenko_spec.md`.
+
+**TBars** (`tb120`) ports the vendor `TBars` bar type (NT8 BarsPeriodType
+98765). Its emitted OHLC is **Heikin-Ashi transformed** (close = 4-way average,
+open = midpoint of synthetic open and prior close) — faithful to what NT8
+charts. Prices are stored on the tick grid, rounded half-to-even inside the
+state loop, exactly as NT8 does. Certified against an NT8 export (geometry and
+bar timing exact; residual is ±1-tick HA-rounding propagation on ~9% of bars).
+Full writeup: `research/TBars_spec.md`. Reference config: **MGC Speed 120**.
 
 Bar type only changes *when the strategy is asked to decide*. Orders always
-fill against the real tick stream, so none of NT8's Renko fantasy-fill
-problem applies — a Renko strategy backtested here gets honest fills.
+fill against the real tick stream regardless of bar type, so none of NT8's
+Renko/TBars fantasy-fill problem applies — a bar strategy backtested here gets
+honest fills.
 
 **Fixed (2026-07-11): renko bars reset incorrectly at midnight ET.** Raw
 data is stored as one file per ET calendar day, and the renko builder used
@@ -225,10 +246,13 @@ serially correlated (|r| > 0.2, per Davey).
 
 ```
 python cli.py <strategy.py> [--symbol MNQ] [--period 1m] [--start D] [--end D]
-              [--balance 50000] [--apex-threshold 2500] [--apex-halt]
-              [--slippage 0] [--out report.html] [--no-report] [--data-root P]
+              [--balance 50000] [--prop-threshold 2000] [--prop-halt]
+              [--daily-loss-limit 600] [--slippage 0] [--mc 2000]
+              [--mc-target 3000] [--out report.html] [--no-report] [--data-root P]
 ```
 
+`--period` accepts any bar type above (`1m`, `500t`, `r8-4`, `s64-16`, `tb120`).
+`--prop-threshold`/`--prop-halt` also accept the legacy `--apex-*` names.
 Env overrides: `BACKTESTER_DATA_ROOT`, `BACKTESTER_CACHE`.
 
 Each report also writes `<name>_trades.csv`. To validate fills against
