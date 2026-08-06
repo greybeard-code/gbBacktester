@@ -75,10 +75,14 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   never gated**. `news_flatten` force-flattens on window entry (engine, exit
   tag "news"). CLI `--news-filter/--news-pre/--news-post/--news-currencies/
   --news-flatten/--news-csv`. Off by default (champion re-runs bit-identical).
-  Motivating case: the Drew GZK request — but note a literal ±5 min USD
-  red-folder filter does NOT recover his $4k (it slightly LOWERS net by
-  dropping winners near the 10:00 ET releases), so the news filter is not the
-  explanation for that gap.
+  Motivating case was the Drew GZK request, but that thread is CLOSED: Drew's
+  "$4k last 30 days / $1,100 DD" came from **NT8 Strategy Analyzer on Renko
+  bars**, whose synthetic-brick fills are the fantasy-fill artifact this repo
+  exists to avoid (fills here resolve on real ticks). So the ~$4k is not a
+  real number to reconcile against — the tick-accurate ~$1k raw / ~-$3k after
+  the Apex 30s rule is the trustworthy figure — and the news filter is NOT the
+  explanation (a ±5 min USD red-folder block slightly LOWERS net by dropping
+  winners near the 10:00 ET releases). Do not chase NT8-Renko-Analyzer P&L.
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine
