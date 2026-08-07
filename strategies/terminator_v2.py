@@ -23,7 +23,7 @@ ninZaRenko 100/4 -> period "r100-4".
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from backtester import ATR, Strategy
+from backtester import ATR, EfficiencyRatio, Strategy
 
 ET = ZoneInfo("America/New_York")
 
@@ -62,6 +62,17 @@ class TerminatorV2(Strategy):
     #     held until back in-window, a hard stop, or session flatten.
     flatten_at_window_end = False
     window_blocks_reversal = False
+    # chop filter: Kaufman Efficiency Ratio over bar CLOSES (0 = pure chop,
+    # 1 = perfect trend). Blocks NEW entries while ER < chop_er_min; exits,
+    # reversal flattens and protective stops are never gated (same principle
+    # as the news filter). On ninZaRenko closes this separates cleanly: a
+    # with-trend run is N equal steps of T ticks one way (ER -> 1.0), while
+    # chop alternates 2B-T reversals that cancel out (ER -> 0). A blocked
+    # reversal re-entry simply leaves the strategy FLAT — the clean-split
+    # flatten has already fired by then, which is the whole point.
+    # chop_er_period = 0 disables (default) -> champion re-runs bit-identical.
+    chop_er_period = 0
+    chop_er_min = 0.0
 
     def _in_entry_window(self, ts_ns):
         if not self.entry_window and not self.entry_window2:
@@ -80,6 +91,8 @@ class TerminatorV2(Strategy):
 
     def on_start(self):
         self.atr = ATR(self.atr_period)
+        self.er = (EfficiencyRatio(self.chop_er_period)
+                   if self.chop_er_period > 0 else None)
         self.trail = None             # xAtrTrailingStop
         self.prev_close = None
         self.pending_reverse = 0      # +1/-1 queued after a clean-split flatten
@@ -119,6 +132,9 @@ class TerminatorV2(Strategy):
             return
         if self.day_blocked:
             return
+        if (self.er is not None and self.er.ready
+                and self.er.value < self.chop_er_min):
+            return                         # too choppy — stand aside (entries only)
         if not self._in_entry_window(bar.ts):
             return
         kw = {}
@@ -139,6 +155,8 @@ class TerminatorV2(Strategy):
 
     def on_bar(self, bar, bars):
         atr = self.atr.update(bar.high, bar.low, bar.close)
+        if self.er is not None:
+            self.er.update(bar.close)   # before any early return — keep it continuous
         c0 = bar.close
         c1 = self.prev_close
 
