@@ -1,7 +1,32 @@
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 from backtester.sweep import expand_grid, rank, sensitivity, format_sensitivity
 from backtester.walkforward import split_windows
+
+_spec = importlib.util.spec_from_file_location(
+    "sweep_cli", Path(__file__).resolve().parent.parent / "sweep.py")
+sweep_cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sweep_cli)
+
+
+def test_parse_value_bools_are_real_bools():
+    """bool("False") is True — parsing it as a str silently runs every
+    False arm of a sweep as True (shipped once; 12 rows came back
+    byte-identical to their True twins)."""
+    assert sweep_cli.parse_value("False") is False
+    assert sweep_cli.parse_value("True") is True
+    assert sweep_cli.parse_value("false") is False
+    assert sweep_cli.parse_value("TRUE") is True
+
+
+def test_parse_value_keeps_numbers_and_strings():
+    assert sweep_cli.parse_value("3") == 3
+    assert isinstance(sweep_cli.parse_value("3"), int)
+    assert sweep_cli.parse_value("3.25") == 3.25
+    assert sweep_cli.parse_value("r100-4") == "r100-4"
 
 
 def test_expand_grid():

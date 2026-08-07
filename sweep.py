@@ -16,6 +16,12 @@ from backtester.loader import load_strategy_class
 
 
 def parse_value(s: str):
+    # bools FIRST: bool("False") is True, so falling through to the str
+    # branch would silently run every "False" arm as True — that shipped
+    # once and made 12 sweep rows byte-identical to their True twins.
+    low = s.strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
     for cast in (int, float):
         try:
             return cast(s)
