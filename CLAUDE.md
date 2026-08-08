@@ -400,6 +400,32 @@ alternative (see below).
   drawdown** for less than 2x the profit and roughly half the Sharpe.
   Prefer evening for capital preservation; morning only if raw trade
   frequency/dollars matter more than risk-adjusted quality.
+- **YM "Three Amigos" (TH+PA+SJ, 3-of-3) on r33-4 (2026-08-08) FAILED
+  validation and must not be deployed.** User-requested test: same gate as
+  the MNQ evening champion above, ported to YM (full-size E-mini Dow,
+  $5/tick) on ninZaRenko r33-4, `strategies/godzilla_ym_three_amigos.py`.
+  The champion's own 20:00-20:45 ET window is a straight loser here (net
+  -$1,558/19mo, 30 trades, PF 0.61, breached the $2k floor) — confirms the
+  MNQ evening window doesn't transfer to a different symbol/brick combo, as
+  expected. A full-session sweep (23 non-overlapping 1h blocks, TP25/SL80
+  held fixed) found 11:00-14:00 ET much stronger (net $4,699/19mo, 376
+  trades, PF 1.15, Sharpe 0.95, survived w/ $1,152 headroom) — but flagged
+  10:00-11:00 ET as catastrophic (net -$8,539, deep breach), which lines up
+  with this repo's own USD 10:00 ET news-release clustering (see news.py
+  above), not a structural edge. A follow-up TP/SL grid on the 11:00-14:00
+  window found a real-looking cluster (not a single spike) at TP25-35/
+  SL110-150, peaking at TP25/SL150: net $6,844, Sharpe 1.09, PF 1.21,
+  WR 87.1%, 373 trades, $1,370 headroom. **walkforward.py overturned it**:
+  5 windows, grid over tp/sl, every IS window optimized to Sharpe 1.1-2.4,
+  but only window 1 held up OOS (Sharpe 4.29 on 40 trades); windows 2-5 went
+  flat-to-negative OOS (Sharpe 0.20, -0.04, -2.54, -0.62). Stitched OOS: net
+  $421/209 days, Sharpe 0.11, **WFE 0.14 ("POOR, likely curve-fit" —
+  Davey: discard)**. Same failure shape as terminator_mcl/terminator_mes:
+  a two-stage sweep (window search, then TP/SL search) both over the full
+  history produces an in-sample-only result that a real OOS split catches.
+  Conclusion: the Three Amigos gate does not transfer to YM r33-4 in any
+  window tested so far. Raw data reports/ym_three_amigos_window_sweep.csv,
+  reports/sweep_GodZillaYMThreeAmigos.csv, reports/ym_1100_1400_walkforward.log.
 
 ## State / roadmap (updated 2026-07-26)
 
@@ -500,7 +526,36 @@ window-end flatten disabled) — see NinjaScript/TerminatorV2/TerminatorV2.md §
   test (walk-forward) came back WFE 0.41 with no parameter convergence —
   the in-sample "Sharpe 3.58" story doesn't survive contact with OOS data;
   kept in the repo only as a recorded negative result, re-evaluate only if
-  MCL gets a multi-year history. `strategies/terminator_scaleout.py` is an
+  MCL gets a multi-year history. `strategies/terminator_bartypes.py`
+  (2026-08-07) **FAILED validation and must not be deployed**: swept the
+  TerminatorRec champion config across 1m/3m/5m/10m time bars and 500t/1000t
+  tick bars on MNQ/MES/MYM (period/symbol swapped in for r100-4, everything
+  else identical) -- MES loses money on every bar type, MYM only scrapes by
+  on thin trade counts, and MNQ's best case (5m, Sharpe 1.65) still falls far
+  short of the renko champion's Sharpe 3.90 and hasn't been walk-forward
+  tested. Confirms renko is load-bearing for this signal, not incidental
+  (see [[renko-is-already-a-chop-filter]] in memory). Full table in the file
+  docstring; raw data reports/terminator_bartype_sweep.csv.
+  Follow-up (2026-08-07): re-tried ninZaRenko (not time/tick bars) on
+  MES/MYM/MGC, with brick size calibrated per-symbol from avg ATR(20,5m)
+  scaled off MNQ's r100-4 (25:1 brick:trend ratio) -> MES r15-1, MYM r19-1,
+  MGC r47-2 (calibration method: backtester/indicators.ATR over
+  Catalog.load_bars_sequence 5m bars, see strategies/terminator_mes.py
+  docstring). Same TerminatorRec structure otherwise. Only MES came back net
+  positive and survived the $2k floor in-sample (net $4,666, Sharpe 1.13,
+  MC P(breach) 26.6% -- 8x the champion's 3.3%). MYM (net -$4,404, breached,
+  MC P(breach) 98.7%) and MGC (net -$10,809, breached, MC P(breach) 99.6%)
+  FAILED outright. `strategies/terminator_mes.py` **FAILED validation and
+  must not be deployed** (2026-08-07 follow-up): MES's in-sample edge did
+  not survive either check run against it — July-only slices were negative
+  both available Julys (2025: -$215; 2026: -$1,199), and walkforward.py (5
+  windows, grid over atr_mult/atr_period/sl_ticks) came back stitched OOS
+  net -$799, OOS Sharpe -0.54, WFE -0.09 ("POOR, likely curve-fit"), no
+  parameter convergence across windows — same failure shape as
+  terminator_mcl. Conclusion: simple ATR-ratio brick recalibration does not
+  transfer the champion signal to other symbols. Raw data
+  reports/terminator_renko_othersymbols.csv,
+  reports/terminator_mes_walkforward.log. `strategies/terminator_scaleout.py` is an
   unfinished research build testing the ATM scale-out exit path (TP1/TP2/
   runner via `backtester/atm.py`) on the validated Terminator champion's
   signal/session — not yet swept. `tools/databento_fill.py` fills gaps in
