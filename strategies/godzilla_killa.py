@@ -38,6 +38,7 @@ from backtester.gbsignals import (
     ThunderZilla,
 )
 from backtester.gbsignals.nt8math import Nt8Ema
+from backtester.indicators import KamaRegime
 from backtester.nt8config import (
     AtmBracket, AtmSpec, load_atm_template, load_strategy_template,
 )
@@ -125,6 +126,26 @@ class GodZillaKilla(Strategy):
     ema_short_period = 21
     ema_long_period = 50
 
+    # KAMA regime filter — port of KamaRegimePro (nt8 code/GodZillaKilla/
+    # indicators/kamareginepro.cs; spec in research/KamaRegime_spec.md). The
+    # sign of the KAMA slope, with a sticky flat band, defines a bull/bear
+    # regime; a NEW entry must agree with it (longs in bull, shorts in bear)
+    # and is otherwise dropped. ENTRIES ONLY: exits, reversal flattens,
+    # window/session flattens and ATM protective legs are never gated, so a
+    # blocked reversal simply leaves the strategy flat — same principle as the
+    # news filter. Regime 0 (still in warmup) blocks: the indicator has no
+    # opinion yet. kama_flatten_on_flip additionally force-flattens a position
+    # the regime turns against, on the flip bar (exit tag "kama-flat").
+    # Off by default -> existing configs re-run bit-identical.
+    kama_filter = False
+    kama_fast = 2                  # NT8 KAMA(fast, period, slow) arg order
+    kama_period = 10
+    kama_slow = 30
+    kama_flat_threshold = 0.5      # ticks/bar; slope inside +-this holds
+    kama_confirm_bars = 1          # 1 = commit immediately (no debounce)
+    kama_warmup_bars = 0           # 0 -> indicator default (period + slow + 5)
+    kama_flatten_on_flip = False
+
     # ---- trading windows (ET), per-window flatten, skip window ----
     tf1_enabled, tf1, tf1_flatten = True, ("19:00", "23:30"), False
     tf2_enabled, tf2, tf2_flatten = True, ("03:00", "09:00"), False
@@ -209,6 +230,12 @@ class GodZillaKilla(Strategy):
                                                    else 0)),))
         self._ema_s = Nt8Ema(self.ema_short_period) if self.ema_filter else None
         self._ema_l = Nt8Ema(self.ema_long_period) if self.ema_filter else None
+        self._kama = (KamaRegime(tick, fast=self.kama_fast,
+                                 period=self.kama_period, slow=self.kama_slow,
+                                 flat_threshold=self.kama_flat_threshold,
+                                 confirm_bars=self.kama_confirm_bars,
+                                 warmup_bars=self.kama_warmup_bars or None)
+                      if self.kama_filter else None)
         self._pending_dir = 0        # ConfirmationBars deferral
         self._pending_bar = -1
         self._pending_close = 0.0
@@ -217,6 +244,10 @@ class GodZillaKilla(Strategy):
         print(f"  [GZK] Set 1: {self.set1_required} of {enabled}"
               + (f" | Set 2 ON ({self.set2_required})" if self.set2_enabled
                  else "")
+              + (f" | KAMA regime {self.kama_fast}/{self.kama_period}/"
+                 f"{self.kama_slow} band {self.kama_flat_threshold} t/bar"
+                 + (" +flatten" if self.kama_flatten_on_flip else "")
+                 if self.kama_filter else "")
               + f" | exits: {self._atm.name} x{self._atm.entry_qty}")
 
     def _resolve_atm(self) -> AtmSpec:
@@ -429,6 +460,18 @@ class GodZillaKilla(Strategy):
                 self._pending_dir = 0
             self._prev_in_flatten[name] = inside
 
+    def _check_kama_flatten(self) -> None:
+        """Force-flat when the regime FLIPS against an open position.
+        Opt-in (kama_flatten_on_flip); this is the one place the filter
+        touches an existing position — entries are gated in _go()."""
+        k = self._kama
+        if k is None or not self.kama_flatten_on_flip:
+            return
+        if k.flipped and not self.flat and k.value * self.position < 0:
+            self.cancel_all()
+            self.close_position(tag="kama-flat", force=True)
+            self._pending_dir = 0
+
     # ------------------------------------------------------------------
     def on_bar(self, bar, bars):
         codes: dict[str, int | None] = {}
@@ -444,9 +487,13 @@ class GodZillaKilla(Strategy):
         if self._ema_s is not None:
             self._ema_s.update(bar.close)
             self._ema_l.update(bar.close)
+        if self._kama is not None:
+            # before any early return — the regime series must stay continuous
+            self._kama.update(bar.close)
 
         tod = self._tod(bar.ts)
         self._check_window_flatten(tod)
+        self._check_kama_flatten()
 
         s1 = self._vote(codes, "", self.set1_required)
         s2 = (self._vote(codes, "g2_", self.set2_required)
@@ -499,6 +546,11 @@ class GodZillaKilla(Strategy):
             self._go(go)
 
     def _go(self, direction: int) -> None:
+        # KAMA regime gate, entries only. Placed here so it covers BOTH entry
+        # paths: a blocked reversal has already closed by the time _go runs,
+        # which is the intended behaviour (flat, not counter-regime).
+        if self._kama is not None and self._kama.value != direction:
+            return
         qty = self._atm.entry_qty
         if direction > 0:
             self.buy(qty=qty, tag="gzk-long")

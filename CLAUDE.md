@@ -83,6 +83,47 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   the Apex 30s rule is the trustworthy figure — and the news filter is NOT the
   explanation (a ±5 min USD red-folder block slightly LOWERS net by dropping
   winners near the 10:00 ET releases). Do not chase NT8-Renko-Analyzer P&L.
+- **KAMA regime filter (2026-08-07)** — `indicators.KAMA` +
+  `indicators.KamaRegime` port KamaRegimePro (`nt8 code/GodZillaKilla/
+  indicators/kamareginepro.cs`, a community indicator S suggested as a GZK
+  filter on YM r33-4); spec in **research/KamaRegime_spec.md**. KAMA is
+  bit-identical to NT8's `@KAMA.cs` (verified against a literal transcription
+  on every branch), warmup quirks included — value IS the price for the first
+  `period` bars, bar 0's "diff" is the raw price, zero noise freezes the line.
+  Regime = sign of the KAMA slope with a STICKY flat band (never neutral after
+  warmup, so it is a **direction bias filter, not a chop filter** — it always
+  permits exactly one side). GZK flags `kama_filter` (+ `kama_fast/period/
+  slow/flat_threshold/confirm_bars/warmup_bars/flatten_on_flip`), all off by
+  default (verified bit-identical). Entries only, gate at the top of `_go()`,
+  so a counter-regime reversal still CLOSES but doesn't re-enter; exit tag
+  "kama-flat" for the opt-in flatten-on-flip. **The 0.5 default band is a 5m
+  time-bar calibration and is nearly inert on renko**: measured on YM,
+  median |slope| is 4.047 t/bar on r33-4 (5.4% of bars inside ±0.5) vs 1.146
+  on 5m (35.8% inside) — on a with-trend renko run KAMA's slope converges to
+  the brick's trend step. **That step is a CLIFF, not a target** (spec §5.1,
+  corrects an earlier note here that said to sweep near it): keep the band
+  strictly BELOW it. At band 4.5 on r33-4 the same-bar flip count goes to
+  literally 0 of 965 signals and the gate stops functioning; below the cliff
+  ~99% of everything it permits fires on the exact bar the regime flips, and
+  ~72% of all GZK signals land on a flip bar (vs ~5% by chance), so on renko
+  this is a **same-bar coincidence detector, not a trend-state filter** —
+  closer to using the flip pulse as a trigger. Full-history sweep on YM r33-4
+  (spec §7.1): **no threshold profits**, all breach the $2k floor; best
+  usable-region value (band 2) only halves the loss (-$22.8k -> -$12.1k) by
+  dropping ~16% of trades at unchanged PF ~0.96, and the post-cliff rows that
+  rank "best" by Sharpe are 64-161-trade small-sample noise.
+  **VERDICT (spec §7.2): the KAMA regime does NOT help GodZillaKilla — do not
+  enable it.** Tested on the config that matters, the validated MNQ evening
+  champion (baseline reproduced exactly: $2,803.20 / 140 trades / PF 1.39 /
+  MC P(breach) 13.3%), EVERY band is worse: 0.5 -> $2,629 (blocks exactly 2
+  signals in 19 months, both winners, -$174), 1 -> $1,934, 2/3 -> $1,977
+  (~-30%). Using the flip PULSE as an entry trigger instead is not a
+  different idea on renko: at max-age >= 1 bar it is byte-identical to the
+  state filter (138 trades, $2,629) because every permitted entry already
+  sits on a flip bar, and at max-age 0 the config's `confirmation_bars=1`
+  deferral moves the entry off the flip bar and leaves 1 trade in 19 months.
+  Kept because it is free when off, is a certified NT8 KAMA any strategy can
+  use, and is a recorded negative result. No NT8 chart parity gate yet.
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine

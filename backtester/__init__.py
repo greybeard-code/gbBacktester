@@ -2,8 +2,8 @@
 from .account import PropFirmConfig
 from .contracts import SPECS, ContractSpec, get_spec
 from .engine import Backtest, Result
-from .indicators import (ATR, EMA, RSI, SMA, Bollinger, EfficiencyRatio,
-                          Highest, Lowest)
+from .indicators import (ATR, EMA, KAMA, RSI, SMA, Bollinger,
+                          EfficiencyRatio, Highest, KamaRegime, Lowest)
 from .news import NewsCalendar
 from .orders import BUY, SELL, Fill, Order, OrderType
 from .sizing import carver_contracts
@@ -14,6 +14,6 @@ __all__ = [
     "BUY",
     "carver_contracts",
     "ContractSpec", "EfficiencyRatio", "EMA", "Fill", "get_spec", "Highest",
-    "Lowest", "NewsCalendar", "Order",
+    "KAMA", "KamaRegime", "Lowest", "NewsCalendar", "Order",
     "OrderType", "Result", "RSI", "SELL", "SMA", "SPECS", "Strategy",
 ]

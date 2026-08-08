@@ -182,6 +182,152 @@ class EfficiencyRatio:
         return self.value
 
 
+class KAMA:
+    """Kaufman's Adaptive Moving Average, ported bar-for-bar from NT8's
+    @KAMA.cs (NinjaTrader 8, 2025) — the indicator KamaRegimePro consumes.
+
+    Signature order follows NT8's: KAMA(fast, period, slow), the
+    efficiency-ratio period in the MIDDLE slot. Two NT8 warmup quirks are
+    reproduced deliberately (see research/KamaRegime_spec.md §2):
+
+      * for the first `period` bars the value IS the input price — the
+        adaptive recursion only starts at bar `period`, seeded off that;
+      * NT8 stores the raw PRICE (not 0) as bar 0's |diff| (@KAMA.cs:56).
+        That value leaves the rolling noise window exactly at bar `period`,
+        one bar before it could ever be read, so it never reaches a
+        published value — but it is carried here anyway, because the noise
+        term is a running sum and the subtraction has to cancel the same
+        double NT8 added.
+
+    update(close) once per bar; `ready` once the adaptive recursion is live.
+    """
+
+    def __init__(self, fast: int = 2, period: int = 10, slow: int = 30):
+        if period < 5:
+            raise ValueError(f"KAMA period must be >= 5 (NT8 range), got {period}")
+        self.fast = fast
+        self.period = period
+        self.slow = slow
+        self._fast_cf = 2.0 / (fast + 1)
+        self._slow_cf = 2.0 / (slow + 1)
+        self.value = math.nan
+        self._bar = -1                                   # NT8 CurrentBar
+        self._in: deque[float] = deque(maxlen=period + 1)   # Input[0..period]
+        self._diffs: deque[float] = deque(maxlen=period + 1)
+        self._noise = 0.0                                # NT8 SUM(diffSeries, period)
+        self._prev_in = math.nan
+
+    @property
+    def ready(self) -> bool:
+        """True once past NT8's `CurrentBar < Period` seeding branch."""
+        return self._bar >= self.period
+
+    def update(self, price: float) -> float:
+        self._bar += 1
+        diff = abs(price - self._prev_in) if self._bar > 0 else price
+        self._prev_in = price
+        self._in.append(price)
+        self._diffs.append(diff)
+        # NT8 SUM: Value[0] = Input[0] + Value[1] - Input[Period]. Same
+        # running-sum form and evaluation order, so the doubles match.
+        drop = self._diffs[0] if self._bar >= self.period else 0.0
+        self._noise = (diff + self._noise) - drop
+
+        if self._bar < self.period:
+            self.value = price
+            return self.value
+        if self._noise == 0:
+            return self.value                            # Value[0] = Value[1]
+        signal = abs(price - self._in[0])
+        # ((signal/noise) * (fastCf - slowCf) + slowCf) ** 2 — C# precedence;
+        # x*x is Math.Pow(x, 2) to the same single rounding.
+        sc = signal / self._noise * (self._fast_cf - self._slow_cf) + self._slow_cf
+        prev = self.value
+        self.value = prev + sc * sc * (price - prev)
+        return self.value
+
+
+class KamaRegime:
+    """The tradable half of KamaRegimePro (nt8 code/GodZillaKilla/indicators/
+    kamareginepro.cs): a bull/bear trend regime from the sign of the KAMA
+    slope, with a sticky flat band and a confirm-bars debounce.
+
+    Slope is measured in TICKS PER BAR, so `flat_threshold` is only
+    comparable across instruments after dividing by tick size — and it is
+    calibrated for time bars. On renko/TBars closes every with-trend bar
+    moves a fixed number of ticks, so the band rarely binds; see
+    research/KamaRegime_spec.md §5 before using it on those.
+
+    The background paint, the ★ flip marker and the WPF readout card are
+    chart cosmetics and are not ported. update(close) once per bar, then read:
+
+      value           +1 bull / -1 bear / 0 pre-init (still in warmup)
+      flipped         True on the bar a new regime commits (RegimeSignal)
+      slope_ticks     KAMA[0] - KAMA[1], in ticks (NaN during warmup)
+      bars_in_regime  bars the committed regime has held
+    """
+
+    def __init__(self, tick_size: float, fast: int = 2, period: int = 10,
+                 slow: int = 30, flat_threshold: float = 0.5,
+                 confirm_bars: int = 1, warmup_bars: int | None = None):
+        self.tick_size = tick_size
+        self.flat_threshold = flat_threshold
+        self.confirm_bars = confirm_bars
+        # KamaRegimePro: _warmupBars = KamaPeriod + KamaSlow + 5
+        self.warmup_bars = period + slow + 5 if warmup_bars is None else warmup_bars
+        self.kama = KAMA(fast, period, slow)
+        self.value = 0
+        self.flipped = False
+        self.slope_ticks = math.nan
+        self.bars_in_regime = 0
+        self._bar = -1
+        self._pending = 0
+        self._pending_n = 0
+        self._last_committed = 0
+
+    @property
+    def ready(self) -> bool:
+        return self.value != 0
+
+    def update(self, close: float) -> int:
+        self._bar += 1
+        prev_kama = self.kama.value
+        # the sub-indicator updates on EVERY bar, warmup included — the
+        # regime block below is what NT8 skips (kamareginepro.cs:189)
+        kama = self.kama.update(close)
+        self.flipped = False
+        if self._bar < self.warmup_bars:
+            self.slope_ticks = math.nan
+            return self.value
+        self.slope_ticks = (kama - prev_kama) / self.tick_size
+
+        # sticky flat band: outside +-threshold commits a direction, inside
+        # holds the last one. The FIRST commit has no band — sign only.
+        if self.value == 0:
+            raw = 1 if self.slope_ticks >= 0 else -1
+        else:
+            raw = self.value
+            if self.slope_ticks > self.flat_threshold:
+                raw = 1
+            elif self.slope_ticks < -self.flat_threshold:
+                raw = -1
+
+        if raw == self._pending:
+            self._pending_n += 1
+        else:
+            self._pending, self._pending_n = raw, 1
+
+        if raw == self.value:
+            self.bars_in_regime += 1
+        elif self._pending_n >= max(1, self.confirm_bars):
+            self.value = raw
+            self.bars_in_regime = 1
+
+        self.flipped = self.value != self._last_committed and self.value != 0
+        self._last_committed = self.value
+        return self.value
+
+
 class Highest:
     def __init__(self, period: int):
         self.period = period
