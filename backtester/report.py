@@ -118,9 +118,9 @@ def render(result, stats: dict, out_path: str | Path, mc=None) -> Path:
             ("Trade duration (median / min)",
              f"{stats['median_duration_s']:.0f}s / {stats['min_duration_s']:.0f}s"))
         stat_rows.append(
-            ("Sub-30s trades (Apex min-hold)",
-             f"{stats['sub30s_trades']} ({stats['sub30s_pct']:.1f}%), "
-             f"{_fmt(stats['sub30s_pnl'])}"))
+            ("Sub-10s trades (fast-hit flag)",
+             f"{stats['sub10s_trades']} ({stats['sub10s_pct']:.1f}%), "
+             f"{_fmt(stats['sub10s_pnl'])}"))
     if "prop_breached" in stats:
         if stats["prop_breached"]:
             prop_txt = f"BREACHED at {np.datetime64(stats['prop_breach_ts'], 'ns')} UTC"

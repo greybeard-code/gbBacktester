@@ -72,23 +72,26 @@ def compute(result) -> dict:
         "avg_day": float(daily.mean()) if len(daily) else float("nan"),
     }
 
-    # trade durations — Apex minimum-hold rule (30s) visibility. A trade held
-    # under 30s doesn't count on a live Apex account, so surface how many there
-    # are and how much P&L rides on them (the champion had 11.1% sub-30s).
+    # trade durations — fast-hit visibility. No confirmed prop-firm rule
+    # ties to a specific duration (the earlier "30s minimum hold" figure
+    # doesn't appear in the Intraday Trailing Drawdown PA/Eval rules, the
+    # account type actually used here — see CLAUDE.md); this is now just a
+    # diagnostic flag so a new strategy's reliance on very-fast hits is
+    # visible at a glance.
     if trades:
         dur_s = np.array([(t.exit_ts - t.entry_ts) / 1e9 for t in trades])
-        sub30 = dur_s < 30.0
+        sub10 = dur_s < 10.0
         stats["median_duration_s"] = float(np.median(dur_s))
         stats["min_duration_s"] = float(dur_s.min())
-        stats["sub30s_trades"] = int(sub30.sum())
-        stats["sub30s_pct"] = float(sub30.mean() * 100)
-        stats["sub30s_pnl"] = float(pnl[sub30].sum())
+        stats["sub10s_trades"] = int(sub10.sum())
+        stats["sub10s_pct"] = float(sub10.mean() * 100)
+        stats["sub10s_pnl"] = float(pnl[sub10].sum())
     else:
         stats["median_duration_s"] = float("nan")
         stats["min_duration_s"] = float("nan")
-        stats["sub30s_trades"] = 0
-        stats["sub30s_pct"] = float("nan")
-        stats["sub30s_pnl"] = 0.0
+        stats["sub10s_trades"] = 0
+        stats["sub10s_pct"] = float("nan")
+        stats["sub10s_pnl"] = 0.0
 
     # prop-firm consistency: largest profitable day as % of total profit
     if len(daily) and total_pnl > 0:
@@ -133,9 +136,8 @@ def format_console(result, stats: dict) -> str:
         lines.append(
             f"Duration:       median {stats['median_duration_s']:.0f}s   "
             f"min {stats['min_duration_s']:.0f}s   "
-            f"<30s: {stats['sub30s_trades']} trades "
-            f"({stats['sub30s_pct']:.1f}%, {d(stats['sub30s_pnl'])}) "
-            f"[Apex min-hold]")
+            f"<10s: {stats['sub10s_trades']} trades "
+            f"({stats['sub10s_pct']:.1f}%, {d(stats['sub10s_pnl'])})")
     if "prop_breached" in stats:
         if stats["prop_breached"]:
             ts = np.datetime64(stats["prop_breach_ts"], "ns")

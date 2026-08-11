@@ -303,6 +303,25 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   100-tick bracket stop is not deferred — a firm-rule matter, not a
   fill-model one; worth confirming with Apex whether a sub-30s stop fill is
   voided the way a manual quick close is).
+  **CORRECTION (2026-08-09): the 30-second figure has no confirmed source.**
+  User checked the actual rules pages for the account type in use here
+  (Intraday Trailing Drawdown, PA + Evaluations) and the 30s minimum-hold
+  isn't in them; a web search for it also came up empty (Apex's public
+  anti-scalping language is a vague HFT ban, no seconds figure — an older,
+  now-removed rule required stop-loss >= 1/5 of target, which is a
+  different mechanism entirely). Where this "30s" number originally came
+  from is unknown. **Changed going forward**: the diagnostic (not
+  enforcement) flag in metrics.py/report.py now flags **sub-10s** trades
+  instead (`sub10s_trades/_pct/_pnl`, was `sub30s_*`) — purely so a high
+  rate of very-fast hits is visible for a new strategy, not because 10s is
+  a confirmed threshold either. `Strategy.min_hold_s` (the actual
+  enforcement knob) is unaffected — it defaults to 0 (off) and every
+  strategy in this repo already keeps it off, so nothing behavioral
+  changed. All the specific "sub-30s" numbers elsewhere in this doc
+  (Terminator champion 11.1%/$-4,211, GZK MNQ champion, YM r80-20 $2,489)
+  are historical measurements against the old, unconfirmed 30s line — left
+  as-is since they're accurate records of what was measured, just not to a
+  verified rule.
 - **US/Eastern ONLY in everything user-facing** (sessions, entry windows,
   reports, hour attributions) — explicit user preference 2026-07-05; their
   PC/NT8/community all run ET. Do NOT express times in CT, even though CME
@@ -426,8 +445,104 @@ alternative (see below).
   Conclusion: the Three Amigos gate does not transfer to YM r33-4 in any
   window tested so far. Raw data reports/ym_three_amigos_window_sweep.csv,
   reports/sweep_GodZillaYMThreeAmigos.csv, reports/ym_1100_1400_walkforward.log.
-
-## State / roadmap (updated 2026-07-26)
+  **All-hours TP/SL grid (2026-08-09) also FAILED, decisively.** User
+  request: same 3-of-3 gate, full session (`tf1_enabled=False`, no window
+  restriction at all) on r33-4, grid TP∈{25,50} x SL∈{50,100}. All 4 combos
+  are deep losers on the full 2024-12-16..2026-08-07 history: best case
+  TP25/SL100 net -$14,016 (Sharpe -1.20, PF 0.92, 1602 trades, breached by
+  $14,939); worst TP50/SL50 net -$39,901 (Sharpe -3.04). No plateau, no
+  near-breakeven cell — this isn't a fragile optimum, the gate is just wrong
+  without a window. Confirms the window sweep above wasn't a formality: the
+  11:00-14:00 window (already rejected on its own by walk-forward, WFE 0.14)
+  was propping up every prior positive-looking number, and unrestricted
+  entries are worse than any single bad hour in isolation. Raw data
+  reports/ym_three_amigos_allhours_tpsl_sweep.log,
+  reports/sweep_GodZillaYMThreeAmigos.csv (overwritten by this run).
+- **r80-20 ninZaRenko (2026-08-09) is the first YM Three Amigos config to
+  survive walk-forward -- promising, but NOT yet fully validated.** Same
+  3-of-3 TH+PA+SJ gate, same all-hours (no window) setup, re-tried on a much
+  coarser brick per user request. `strategies/godzilla_ym_three_amigos_r80.py`.
+  All-hours TP/SL grid (reports/sweep_GodZillaYMThreeAmigos.csv, this run):
+  TP50/SL100 net $7,600, Sharpe 2.05; TP25/SL100 net $5,055, Sharpe 2.05;
+  TP50/SL50 net $500; TP25/SL50 net -$550. SL is flagged FRAGILE by the
+  sweep's own sensitivity check (SL50 bad, SL100 good, no plateau) -- normal
+  caution applies, but TP50/SL100 then walk-forward tested clean:
+  walkforward.py (5 windows, ratio 5, grid over the same 4 combos) picked
+  **TP50/SL100 in all 5 IS windows** (parameter convergence, unlike every
+  prior YM attempt) and went **5/5 profitable OOS**, stitched OOS net
+  $4,720/214 days, Sharpe 2.20, **WFE 1.17 ("OK, edge survives OOS")** --
+  reports/ym_three_amigos_r80_20_walkforward.log. Full-history detail (cli.py
+  + Monte Carlo, 2024-12-16..2026-08-07, $2k floor): net $7,599.80/92 trades,
+  WR 78.3%, PF 1.75, Sharpe 2.05, maxDD -$1,209 (2.14%), MC (5000 sims)
+  P(breach $2k)=3.2%, P(pass $3k eval before breach)=96.6% --
+  reports/ym_three_amigos_r80_20_fullreport.log,
+  reports/GodZillaYMThreeAmigosR80.html. Rule-adjusted (Apex 30s min-hold:
+  net minus sub-30s trades, all 10 of which are winners worth $2,489 here --
+  a pure bonus being conservatively stripped, not a drag like the MNQ
+  champion) still nets ~$4,826, comfortably positive. Caveats before calling
+  this live-ready: only 92 trades / 19mo (~4.6/mo) is a thin sample, the
+  walk-forward OOS legs are 8-14 trades each, and r80-20 has no NT8
+  chart-export parity check yet (the 5 settings validated in the ninZaRenko
+  section above don't include this brick/trend ratio). Next step if pursued
+  further: NT8 parity on r80-20, then treat like any other pre-live
+  candidate (paper trade / smaller size first).
+  **Wider TP/SL grid on r80-20 (2026-08-09): confirms a real plateau AND
+  exposes a floor-breach trap at wider TP.** Expanded to TP in {25,50,75,
+  100} x SL in {50,75,100,150,200} (20 combos), full history
+  (reports/sweep_GodZillaYMThreeAmigosR80.csv, this run). Clean split:
+  **TP<=50 with SL>=100 never breaches the $2k floor** across the whole
+  region (headroom +9 to +1,410, Sharpe 0.62-2.05) -- a genuine plateau,
+  not the single-point spike the narrower 2x2 grid made it look like.
+  **TP>=75 breaches the floor at every SL tested** (headroom -18 to
+  -5,248) despite some of those cells having attractive headline numbers
+  (TP100/SL100: net $7,865, Sharpe 1.39 -- but headroom -$1,233, a real
+  breach). Running walkforward.py over the FULL wide grid (including the
+  unsafe cells) walked straight into this trap: 2 of 5 windows picked
+  TP100/SL100 on IS Sharpe alone (3.18, 2.63) with no floor check, dropping
+  the result to 4/5 profitable OOS windows, WFE 1.02, stitched Sharpe 1.73
+  (reports/ym_three_amigos_r80_20_wide_walkforward.log) -- worse than the
+  original narrow-grid run, and would have shipped a floor-breaching
+  config if headroom weren't checked separately. Re-running walk-forward
+  restricted to the confirmed-safe cells (TP in {25,50} x SL in {100,150,
+  200}) reconverges cleanly: **5/5 profitable OOS**, WFE 1.19, stitched net
+  $4,115/214 days, Sharpe 1.92, picks clustering on TP50/SL100-150
+  (reports/ym_three_amigos_r80_20_safezone_walkforward.log) -- consistent
+  with the original TP50/SL100 pick. **Takeaway: TP50/SL100 stays the
+  reference config; TP50/SL150 is a close, slightly higher-net/higher-
+  headroom alternative also inside the safe plateau; do not use TP>=75 on
+  this config regardless of how good its Sharpe looks in a sub-window --
+  it breaches the account floor on the full history.** General lesson,
+  worth remembering elsewhere in this repo: sweep/walk-forward params by
+  Sharpe alone can walk into a floor breach that the metric doesn't see --
+  always cross-check `prop_min_headroom` on the grid, not just after
+  picking a winner.
+  **Smaller same-ratio bricks (r40-10, r20-5) FAILED, 2026-08-09 -- the
+  edge does not scale down.** r80-20 prints too slowly to watch on a live
+  chart, so user asked for the same 4:1 brick:trend ratio at half (r40-10)
+  and quarter (r20-5) size, same gate, same all-hours setup, same TP/SL
+  grid (`strategies/godzilla_ym_three_amigos_r40.py` /
+  `_r20.py`). Both lose on every combo in the grid: r40-10 best case
+  (TP50/SL100) net -$7,626, Sharpe -0.85, no plateau
+  (reports/ym_three_amigos_r40_10_allhours_tpsl_sweep.log); r20-5 best case
+  net -$1,475, Sharpe -0.11, PF 0.99 (near-flat but still negative, not a
+  walk-forward candidate) (reports/ym_three_amigos_r20_5_allhours_tpsl_sweep.log).
+  Trade count scales as expected with brick size (92 -> 355 -> 950), so the
+  smaller bricks aren't signal-starved -- the edge itself just isn't
+  present there. r80-20's result looks tied to that specific brick scale,
+  not a generic "same edge, more bars" relationship; do not assume the
+  r80-20 result generalizes to other bricks without testing each one.
+  **Time-window search on r40-10 also FAILED (2026-08-09).** User asked
+  whether restricting entries to a specific window (the move that mattered
+  for r33-4) rescues r40-10. 23-hour window sweep, TP50/SL100 fixed (the
+  all-hours best case), full history -- no standout: best single hour is
+  16:00-16:55 (Sharpe 0.66, only 11 trades) and 11:00-12:00 (Sharpe 0.56,
+  30 trades); everything else is weaker or negative
+  (reports/ym_three_amigos_r40_10_window_sweep.log/.csv). Combined the two
+  strongest contiguous hours (11:00-13:00, mirroring how the r33-4 window
+  was built) -- net $2,079, Sharpe 0.59, PF 1.24, 60 trades, but **breaches
+  the $2k floor outright** (headroom -$224). r40-10 has no rescuing window;
+  the all-hours failure isn't a "wrong hours" problem, the gate+brick combo
+  just doesn't produce edge on this symbol/brick pairing.
 
 Done: engine + fills + brackets + order modification, Apex tracker + daily
 loss limit, metrics (Sharpe/Sortino/Calmar/gross-vs-net), tearsheet + trades

@@ -102,9 +102,12 @@ class Strategy:
     # Net-position cap (contracts). None = use the symbol's Apex cap
     # (6 minis / 60 micros); 0 disables the guard entirely.
     max_position: int | None = None
-    # Apex minimum trade duration (seconds). > 0 makes strategy-initiated
-    # exits (close_position / reversals) wait until the position is this old;
-    # hard bracket stops and session/DLL flattens are NOT gated. 0 = off.
+    # Minimum trade duration (seconds), if a prop-firm rule requires one.
+    # > 0 makes strategy-initiated exits (close_position / reversals) wait
+    # until the position is this old; hard bracket stops and session/DLL
+    # flattens are NOT gated. 0 = off (no such rule confirmed for the
+    # Intraday Trailing Drawdown accounts this repo currently targets —
+    # see CLAUDE.md).
     min_hold_s: float = 0.0
     # Extra bar series for multi-timeframe logic, e.g. ["5m", "15m"]. Each is
     # a period string (same grammar as `period`). During on_bar, read the
