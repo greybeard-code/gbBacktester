@@ -329,6 +329,11 @@ class Catalog:
                 symbol, dates, spec, days,
                 lambda day, carry: build_tbar_bars(
                     day, spec.speed_ticks, tick_size, carry=carry))
+        if spec.kind == "wave":
+            return self._load_sequence_carry(
+                symbol, dates, spec, days,
+                lambda day, carry: build_wave_bars(
+                    day, spec.wave_ticks, tick_size, carry=carry))
         return [self.load_bars(symbol, date, spec, tick_size,
                                days[i] if days is not None else None)
                 for i, date in enumerate(dates)]
@@ -474,7 +479,7 @@ def _flow_volumes(day: DayL1) -> tuple[np.ndarray, np.ndarray]:
 
 
 def build_bars(day: DayL1, spec, tick_size: float) -> BarDay:
-    """Dispatch on BarSpec.kind: time / tick / renko / saber / tbars."""
+    """Dispatch on BarSpec.kind: time / tick / renko / saber / tbars / wave."""
     if spec.kind == "time":
         return build_time_bars(day, spec.seconds)
     if spec.kind == "tick":
@@ -487,6 +492,8 @@ def build_bars(day: DayL1, spec, tick_size: float) -> BarDay:
                                 tick_size, spec.filter_s * 1_000_000_000)
     if spec.kind == "tbars":
         return build_tbar_bars(day, spec.speed_ticks, tick_size)
+    if spec.kind == "wave":
+        return build_wave_bars(day, spec.wave_ticks, tick_size)
     raise ValueError(f"Unknown bar kind {spec.kind!r}")
 
 
@@ -1001,15 +1008,111 @@ def build_tbar_bars(day: DayL1, speed_ticks: int, tick_size: float,
     `open +/- trend*0` is just `open`), which the next differing tick
     immediately breaks.
     """
+    return _build_tbar_family_core(
+        day, (speed_ticks // 2) * tick_size, (speed_ticks * 2) * tick_size,
+        speed_ticks * tick_size, tick_size, carry,
+        reset_carries_dir=reset_carries_dir, seed_symmetric=False)
+
+
+def build_wave_bars(day: DayL1, wave_ticks: int, tick_size: float,
+                    carry: tuple | None = None) -> BarDay:
+    """Wave Bars — see `nt8 code/HiLoRider/WaveBars/WaveBars.md`.
+
+    Ported from `NinjaTrader.NinjaScript.BarsTypes.WaveBarsType` (FlowMatriX,
+    custom BarsPeriodType id 77077). Unlike ninZaRenko/SaberRenko/TBars this
+    one shipped as readable source, so it was read directly rather than
+    characterised behaviourally.
+
+    **Wave Bars is the TBars algorithm** — same one-parameter derivation, same
+    strict breakout, same exact-threshold clamp, same phantom open, same
+    Heikin-Ashi output, same reset trigger — so this shares
+    `build_tbar_bars`'s certified hot loop via `_build_tbar_family_core`. One
+    user parameter, NT8's **"Wave Size"** (`BarsPeriod.Value`, here
+    `wave_ticks` = N), from which `SeedOffsets` derives:
+
+    - trend offset   `max(1, N // 2)` ticks — with-trend continuation
+    - reversal       `N * 2`          ticks — against-trend
+    - open offset    `N`              ticks — phantom open, back from the close
+
+    so a reversal costs **4x** a continuation. Note the `max(1, ...)`: TBars
+    has no such clamp, which is why `parse_barspec` rejects `tb1` (zero-tick
+    trend threshold) but accepts `w1`.
+
+    Three behavioural differences from TBars, all of them Wave Bars being the
+    better-behaved of the two:
+
+    1. **Volume is not double-counted.** TBars passes the completing tick's
+       volume to BOTH `UpdateBar` and `AddBar`, so NT8's bar volumes exceed
+       traded volume (measured: +2,292 contracts over one MNQ window,
+       research/TBars_spec.md §8.1) and `build_tbar_bars` has to diverge
+       deliberately. Wave Bars passes **0** to `UpdateBar` and the real volume
+       to `AddBar` — the breakout tick belongs to the NEW bar only, which is
+       exactly this repo's non-overlapping `[i0, i1)` convention. So here the
+       port matches the platform rather than diverging from it, and
+       `sum(bar volume) == traded volume` is an exact identity apart from the
+       bar still forming when data ends.
+    2. **The seed band is symmetric `+/- trend`, with no direction carry**, so
+       the inverted-band bug cannot occur. TBars re-seeds `open +/- trend*dir`,
+       which inverts (`bar_max < bar_min`) whenever the prior direction was
+       down and emits a bar whose open sits above its own high — hence
+       `build_tbar_bars`'s `reset_carries_dir=False` default and the whole
+       `NinjaScript/gbTBars/` fix. Fixed at source here, so there is no
+       `reset_carries_dir` parameter to offer. Two real consequences: there is
+       **no seed doji stub** (TBars' seed collapses `bar_max == bar_min ==
+       open`; this one opens a `2 * trend`-wide band, so the first bar after a
+       reset is a real bar), and a reversal on that first bar costs `trend`
+       rather than `4 * trend` — a genuine one-bar suspension of the
+       asymmetry, faithful and not to be "fixed".
+    3. **`RecoverBand()`** reverse-engineers the band from stored OHLC when
+       NT8 attaches the bar type to a series that already has bars (a cache
+       reload, re-adding the study). Not ported: this builder always builds
+       forward from raw ticks, so the branch is unreachable here.
+
+    Everything else is `build_tbar_bars`'s contract, including NT8's
+    half-to-even tick rounding INSIDE the state loop (the next bar's HA open
+    reads a rounded close), the strict `>` / `<` breakout test, and the
+    gap-driven (not calendar-driven) reset. `carry` has the identical shape,
+    `(bar_open, bar_max, bar_min, bar_dir, run_hi, run_lo, volume,
+    buy_volume, sell_volume)`, and the caller decides carry vs. reset because
+    day FILES are ET calendar days while an overnight session runs straight
+    through midnight ET with no real gap.
+
+    `bar_dir` is carried but **inert** for this variant: it is written then
+    read inside the breakout branch, and the seed no longer consults it, so a
+    stale value has no geometric effect. It is preserved rather than zeroed so
+    the carry tuple keeps round-tripping the same field the C# keeps.
+    """
+    return _build_tbar_family_core(
+        day, max(1, wave_ticks // 2) * tick_size, (wave_ticks * 2) * tick_size,
+        wave_ticks * tick_size, tick_size, carry,
+        reset_carries_dir=False, seed_symmetric=True)
+
+
+def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
+                            open_off: float, tick_size: float,
+                            carry: tuple | None, reset_carries_dir: bool,
+                            seed_symmetric: bool) -> BarDay:
+    """Shared hot loop for the TBars family (`build_tbar_bars`,
+    `build_wave_bars`).
+
+    The two bar types are the same algorithm with different seed geometry, so
+    the loop is factored out rather than copied — it is the piece certified by
+    the 2026-08-04 TBars chart-export parity gate and must not drift between
+    them. The three price distances arrive already derived (they differ: Wave
+    clamps its trend offset to >= 1 tick), and the variants differ only in
+    `seed_symmetric`:
+
+    - `False` (TBars) — seed `open +/- trend * bar_dir`, i.e. collapsed at a
+      fresh start (`bar_dir` 0) and INVERTED after a down run when
+      `reset_carries_dir=True`. See research/TBars_spec.md §5.2.
+    - `True` (Wave) — seed `open +/- trend`, always a valid band.
+      `reset_carries_dir` is ignored.
+    """
     n = len(day)
     if n == 0:
         return _empty_bars()
     ts, prices, vol = day.ts, day.price, day.volume
     buy, sell = _flow_volumes(day)
-
-    trend_off = (speed_ticks // 2) * tick_size
-    rev_off = (speed_ticks * 2) * tick_size
-    open_off = speed_ticks * tick_size
 
     gap_starts = np.flatnonzero(np.diff(ts) > RENKO_RESET_GAP_NS) + 1
 
@@ -1037,8 +1140,12 @@ def build_tbar_bars(day: DayL1, speed_ticks: int, tick_size: float,
     if carry is None:
         bar_open = run_hi = run_lo = float(prices[0])
         bar_dir = 0
-        bar_max = bar_open + trend_off * bar_dir
-        bar_min = bar_open - trend_off * bar_dir
+        # TBars: bar_dir is 0 here, so the band COLLAPSES onto the open and the
+        # next differing tick completes a zero-range doji. Wave: a real
+        # +/-trend band, so the first bar is a real bar (WaveBars.md §5.2).
+        seed_off = trend_off if seed_symmetric else trend_off * bar_dir
+        bar_max = bar_open + seed_off
+        bar_min = bar_open - seed_off
         cv = cb = cs = 0
     else:
         (bar_open, bar_max, bar_min, bar_dir, run_hi, run_lo,
@@ -1119,13 +1226,23 @@ def build_tbar_bars(day: DayL1, speed_ticks: int, tick_size: float,
         cv = cb = cs = 0
         ts_end.append(int(ts[end_idx])); i0s.append(i0); i1s.append(next_gap)
 
-        # Re-seed. bar_dir is dropped unless the caller asked for the DLL's
-        # verbatim (and threshold-inverting) behaviour — see docstring.
-        if not reset_carries_dir:
-            bar_dir = 0
+        # Re-seed.
+        if seed_symmetric:
+            # Wave Bars seeds a symmetric band and never consults bar_dir
+            # here, so `bar_max < bar_min` is unreachable and no malformed bar
+            # can be emitted. bar_dir is deliberately left ALONE, exactly as
+            # the C# leaves its own field: it is write-then-read inside the
+            # breakout branch, so a stale value has no geometric effect.
+            seed_off = trend_off
+        else:
+            # TBars: bar_dir is dropped unless the caller asked for the DLL's
+            # verbatim (and threshold-inverting) behaviour — see docstring.
+            if not reset_carries_dir:
+                bar_dir = 0
+            seed_off = trend_off * bar_dir
         bar_open = run_hi = run_lo = float(prices[next_gap])
-        bar_max = bar_open + trend_off * bar_dir
-        bar_min = bar_open - trend_off * bar_dir
+        bar_max = bar_open + seed_off
+        bar_min = bar_open - seed_off
         i0 = next_gap
 
     # Fold the forming bar's remaining UPDATING ticks into its extremes before

@@ -44,6 +44,10 @@ def test_parse_barspec():
     with pytest.raises(ValueError):
         parse_barspec("tb1")                    # N//2 == 0 -> zero trend offset
     assert parse_barspec("120t").kind == "tick"  # not confused with tb120
+    w = parse_barspec("w120")
+    assert w.kind == "wave" and w.wave_ticks == 120 and w.key == "w120"
+    # Wave clamps its trend offset to >= 1 tick, so w1 is legal where tb1 is not
+    assert parse_barspec("w1").wave_ticks == 1
 
 
 def test_build_bars_basic():

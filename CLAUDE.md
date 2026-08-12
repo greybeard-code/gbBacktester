@@ -124,6 +124,88 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   deferral moves the entry off the flip bar and leaves 1 trade in 19 months.
   Kept because it is free when off, is a certified NT8 KAMA any strategy can
   use, and is a recorded negative result. No NT8 chart parity gate yet.
+- **Wave Bars ("w120")** — LANDED 2026-08-11, parity gate RUN 2026-08-11. Port of
+  Khahn's recommended bar type (`nt8 code/HiLoRider/WaveBars/`, FlowMatriX,
+  custom BarsPeriodType **77077**). Writeup: `nt8 code/HiLoRider/WaveBars/
+  WaveBars.md`. **Wave Bars IS the TBars algorithm** — same one-parameter
+  derivation (trend `N//2`, reversal `N*2`, phantom open `N`, so a reversal
+  costs 4x a continuation), same strict breakout, same exact-threshold clamp,
+  same Heikin-Ashi output, same reset trigger — so it shares the certified hot
+  loop via `data.py::_build_tbar_family_core`. It ships as **readable source**,
+  not a decompilation, so the no-decompiled-source policy doesn't bite.
+  THREE differences, and Wave is the better-behaved one in all three:
+  (1) **volume is not double-counted** — it passes 0 to `UpdateBar` and the
+  real volume to `AddBar`, i.e. the breakout tick goes to the NEW bar only,
+  which is already this repo's `[i0,i1)` convention, so TBars_spec §4's
+  "deliberate divergence" disappears; (2) **the seed band is symmetric
+  `open +/- trend` with no direction carry**, so the inverted-band bug (the one
+  that forced `reset_carries_dir=False` and spawned `NinjaScript/gbTBars/`) is
+  **unreachable** — hence no `reset_carries_dir` parameter, no seed doji stub,
+  and a reversal on the first bar after a reset costs `trend` not `4*trend`
+  (a real one-bar suspension of the asymmetry, faithful); (3) trend offset is
+  clamped `max(1, N//2)`, so `w1` is legal where `tb1` is rejected. The
+  parameter lives in NT8's `Value` ("Wave Size"), NOT `BaseBarsPeriodValue`,
+  and there is no `Value2` — so `nt8config.py` maps 77077 -> `w{Value}` with
+  no derived-pair assertion. No `BARS_VERSION` bump (new cache key `w120`
+  can't collide with `tb120`; ~1 GB/symbol of cache stays valid).
+  **`build_tbar_bars` verified bit-identical across the extraction** — old
+  `data.py` pulled from git, compared array-by-array + `end_state` on 840
+  randomised cases (5 N values x 2 ticks x gaps x both `reset_carries_dir`
+  modes x carried-in splits), zero differences. Measured on 27 real sessions
+  (2026-07): MGC `w120` 19.7 bars/day (matches TBars_spec's ~21), MNQ 169/day;
+  **zero-range bars fall 6.6% -> 0.4% on MGC and 0.5% -> 0.02% on MNQ vs
+  `tb120`**, confirming the stubs were seed artifacts. NOTE both bars/day
+  figures contradict HiLoRider's own claimed bar counts in both directions, so
+  whatever produced their bar files was not this bar type at this setting.
+  **Pre-existing family-wide gap surfaced (NOT introduced, NOT fixed):** bar
+  volumes sum to 99.42% of traded on MNQ, and the missing contracts are
+  *exactly* the bar still forming at a day-file end that is followed by a real
+  gap — at an intra-file gap the builder emits the abandoned bar, but
+  `_load_sequence_carry` silently discards it when it drops the carry at an
+  inter-file gap. Frequency is **once per WEEKEND, not per day**: day files are
+  ET calendar days, so on a weekday the 17:00-18:00 halt is an INTRA-file gap
+  (weekday files show max intra-day gap 60.0 min) and the bar IS emitted, while
+  a Friday file just ends at 16:59 ET (max intra-day gap 0.1 min) and its
+  forming bar dies at the 2,940-min weekend gap. `tb120` reports the identical
+  99.4234% and saber has the same shape. Fixing it would add a bar to
+  `build_tbar_bars` and invalidate the certified TBars parity numbers, so it is
+  the user's call (~0.2% of bars).
+  **PARITY GATE (2026-08-11, MNQ Wave 120, `nt8 code/HiLoRider/WaveBars/
+  bars_MNQ_Wave_120.csv`, 2026-07-19 18:00 -> 08-07 17:00 ET clipped to our
+  data, 2902 bars): timing 99.8%, identical high/low 100.0% (LOW exact on
+  2897/2897), close 91.9%, full OHLC 79.4%, every field within +-1 tick on
+  99.9%.** Geometry + timing CERTIFIED — bar 1 hand-verified to the cent, and it
+  is a REAL bar where the TBars export's bar 1 was a seed doji at the same
+  28747.5 (§5.2 visible in NT8's own output). **TBars residual (b) eliminated**:
+  reopen-window mismatch 19.8% vs 20.6% elsewhere (no longer special) and ZERO
+  reopen bars with a high/low mismatch, vs TBars' 24-29 wrong bars clustered at
+  18:00. Remaining residual is ONLY +-1 tick HA propagation (open 13.8%, close
+  8.0%, near-symmetric) — unchanged from TBars since no Wave difference touches
+  the HA math, and it cannot reach the fill model. NOTE full OHLC 79.4% ~= TBars'
+  79.3%: an earlier prediction here of 85-90% was WRONG (residual (b) was only
+  1.3% of bars, so removing it could only lift the total ~1 point) — the real
+  upgrade is high/low 98.7% -> 100.0%, i.e. TBars' 79.3% contained wrong bars
+  while Wave's 79.4% contains only rounding. The 8 imperfect bars are fully
+  accounted: 5 unmatched (four are 16:59:59 Friday/end-of-data boundary bars per
+  the weekend gap above; one is 07-29 whose halt gap measured 50.7 min) and 3
+  off by >1 tick, all on 2026-07-31 16:02-16:53 ET — tick data on that date, not
+  geometry (cf. TBars_spec §8.2 where 07-24 needed repair).
+  **MGC gate (same day, `bars_MGC_Wave_120.csv`, 2026-07-05 18:00 -> 07-27 17:00
+  ET, 344 bars) is CLEANER than MNQ's: timing 99.1%, high/low 341/341 =
+  100.0%, close 92.7%, full OHLC 78.3%, and every field within +-1 tick on
+  341/341 = 100.0% — NOT ONE bar off by more than a single tick.** Delta
+  distribution is literally only 0 and +-1. Reopen window 12.0% mismatched vs
+  22.5% elsewhere (better than average) with zero high/low mismatches, so
+  residual (b) is dead on a second instrument. All 3 unmatched bars are 16:59:5x
+  on 07-10/07-17/07-24 — the three FRIDAYS in the window, nothing else, which
+  reproduces the weekend forming-bar drop exactly. 21.5 bars/day, matching
+  TBars_spec §1's ~21. **The 07-27 clip is forced by data, not chosen**: our
+  recorded MGC contract expires out from under the comparison (154k trades
+  07-28, 4,181 07-30, 155 07-31, ~20/day after) and the export jumps +59.0 at
+  07-27 18:22 onto a later month — re-running at later cuts freezes the
+  correct-bar counts at exactly 341/286/316/267 while only the denominator
+  grows. Certifying MGC past 07-27 needs contract MGC 08-26 recorded (see
+  TBars_spec §9).
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine

@@ -184,10 +184,16 @@ def load_atm_template(path: str | Path) -> AtmSpec:
 # inverting the thresholds). That second fix makes gbTBars agree with this
 # port's DEFAULT `reset_carries_dir=False`, so a gbTBars chart should show
 # BETTER parity than the 79.3% measured against stock TBars.
+# 77077 is Wave Bars (FlowMatriX, `nt8 code/HiLoRider/WaveBars/`). Same
+# algorithm as TBars but its ONE user parameter lives in **Value** ("Wave
+# Size"), NOT BaseBarsPeriodValue — Configure removes BaseBarsPeriodValue and
+# Value2 from the property grid entirely, so there is no derived pair to
+# cross-check the way TBars' Value/Value2 assertion above does.
 _BAR_TYPE_RENKO = 12345
 _BAR_TYPE_SABER = 20821
 _BAR_TYPE_TBARS = 98765
 _BAR_TYPE_GBTBARS = 91001
+_BAR_TYPE_WAVE = 77077
 
 
 @dataclass
@@ -252,11 +258,13 @@ def _parse_bar_spec(el: ET.Element, name: str) -> str:
                 "written by the bar type this port models — check the "
                 "BarsPeriodTypeSerialize id (research/TBars_spec.md §7).")
         return f"tb{speed}"
+    if type_id == _BAR_TYPE_WAVE:
+        return f"w{value}"
     raise ValueError(
         f"{name}: BarsPeriodTypeSerialize={type_id} not mapped to a BarSpec "
         f"(known: {_BAR_TYPE_RENKO}=ninZaRenko, {_BAR_TYPE_SABER}=SaberRenko, "
-        f"{_BAR_TYPE_TBARS}=TBars, {_BAR_TYPE_GBTBARS}=gbTBars). "
-        "Add the mapping when needed.")
+        f"{_BAR_TYPE_TBARS}=TBars, {_BAR_TYPE_GBTBARS}=gbTBars, "
+        f"{_BAR_TYPE_WAVE}=Wave). Add the mapping when needed.")
 
 
 def load_strategy_template(path: str | Path) -> StrategyTemplate:
