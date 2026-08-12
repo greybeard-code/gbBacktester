@@ -19,6 +19,27 @@ that is fixed.
 §1–§6 are the pre-port analysis, kept because §4.2's prediction was
 subsequently confirmed by measurement; §7 is the result.
 
+## 0. Provenance — the source is deliberately NOT in this repo
+
+This document cites `HiLoRider v1.0 08-11-26/**` by file and line number, but
+**those files are gitignored and will not be present in a clone.** HiLoRider is
+Khahn's private strategy, shared with the user directly rather than circulated
+publicly, and this repository is public — so it is not ours to publish (user
+decision 2026-08-11). It is kept locally for reference only, the same treatment
+the vendor bar-type binaries get.
+
+Everything this repo actually depends on is therefore recorded rather than
+vendored: the behaviour in §1–§3 of this document, and a from-scratch
+reimplementation of the shipped-live config in `strategies/hilo_rider.py`. The
+line references are for whoever has the source on disk; nothing here needs them
+to be reproducible.
+
+Two things next to it in `nt8 code/HiLoRider/` **are** tracked, deliberately:
+`WaveBars/` (FlowMatriX's own declared open-source bar type — see
+[`WaveBars/WaveBars.md`](WaveBars/WaveBars.md) §1) and the two
+`bars_*_Wave_120.csv` chart exports, which are market data rather than anyone's
+source and are the evidence behind the parity gate.
+
 ---
 
 ## 1. What the strategy actually is

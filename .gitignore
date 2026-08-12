@@ -30,3 +30,16 @@ nt8 code/TBarsNew/TBarsNEW/NinjaTrader.NinjaScript.*/
 nt8 code/TBarsNew/TBarsNEW/Properties/
 nt8 code/TBarsNew/TBarsNEW/NinjaTrader.Custom.Resource.resx
 nt8 code/TBarsNew/TBarsNEW/TBarsNEW-cleaned.*
+
+# Khahn's HiLoRider — a friend's PRIVATE strategy, shared directly rather than
+# circulated publicly, so it is not ours to publish from a public repo (user
+# decision 2026-08-11). Same "keep it locally, commit the analysis instead"
+# treatment as the vendor binaries above: everything this repo actually depends
+# on is written up in `nt8 code/HiLoRider/HiLoRider.md` and reimplemented from
+# scratch in `strategies/hilo_rider.py`.
+# NOTE the WaveBars/ sibling directory is deliberately NOT ignored — Wave Bars
+# is FlowMatriX's own declared open-source bar type, and the two bar exports
+# next to it are market data, not anyone's source.
+nt8 code/HiLoRider/HiLoRider v1.0*/
+nt8 code/HiLoRider/HiLoRiderTrainer.py
+nt8 code/HiLoRider/HiLoRiderDashboardGenerator.py
