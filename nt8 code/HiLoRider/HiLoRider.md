@@ -1,15 +1,23 @@
 # HiLoRider — technical overview and backtester test plan
 
-Status: **not ported.** Review artifact only; no code written. Source read:
+Status: **ported and tested 2026-08-11 — FAILED validation, do not deploy.**
+Python: `strategies/hilo_rider.py`. Bar type `w120`, parity-gated
+([`WaveBars/WaveBars.md`](WaveBars/WaveBars.md)). Source read:
 `HiLoRider v1.0 08-11-26/` (19 `.cs` files, 8,800 lines) + `HiLoBands.cs`.
-Author: Khahn. Recommended bar type: **Wave 120** — see
-[`WaveBars/WaveBars.md`](WaveBars/WaveBars.md).
+Author: Khahn. Recommended bar type: **Wave 120**.
 
-Read §4 before deciding whether this is worth testing. The strategy's own
-reported results (Sharpe 19.193, WR 88.5%, PF 7.80, MaxDD −$212) are not
-survivable claims, and the arithmetic in §4.2 identifies a specific, quantified
-mechanism that would produce exactly those numbers from no edge at all. The test
-plan in §6 is designed to settle it rather than argue about it.
+**Bottom line (§7).** On real-tick fills the reported Sharpe 19.193 / WR 88.5% /
+PF 7.80 / MaxDD −$212 becomes **Sharpe 1.16 / WR 65.1% / PF 1.04 / MaxDD
+−$5,666**, and it **breaches the $2,000 prop floor three weeks into the sample**
+(MC P(breach) 70.4%). The mechanism is identified and measured in §4.2: a Wave
+bar's Heikin-Ashi close sits ~86 ticks behind the tradable price, so a
+close-filled backtest gets ~71% of its 120-tick target free on every trade.
+Separately, §7.2 found a **repo-wide data defect** (crossed bid/ask at the Globex
+reopen) worth 60% of even the honest +$13,486 — so Stages 3-5 are on hold until
+that is fixed.
+
+§1–§6 are the pre-port analysis, kept because §4.2's prediction was
+subsequently confirmed by measurement; §7 is the result.
 
 ---
 
@@ -463,22 +471,15 @@ produces a surprise: export `Signal`/`Signal2` per bar from NT8 (pattern:
 `tools/compare_signals.py`. This separates "did I port the indicator" from "is
 the edge real".
 
-**Stage 2 — the honest baseline. This is the number that matters.**
-MNQ `w120`, `LookbackPeriod=25`, TP 120, StopBuffer 2, TrailMin 40, stages 5/6/10,
-**market entry**, full history 2024-12-16 → 2026-08-07, 1 contract, $2,000 prop
-floor. Report net, Sharpe, PF, WR, maxDD, prop headroom, `sub10s_*`, and slot-1
-vs slot-2 attribution.
+**Stage 2 — the honest baseline.** ✅ **RUN 2026-08-11.** `strategies/hilo_rider.py`,
+MNQ `w120`, `lookback_period=25`, TP 120, StopBuffer 2, TrailMin 40, stages
+5/6/10, **market entry**, 2024-12-16 → 2026-08-07 (501 days), 1 contract,
+$2,000 prop floor. Full result and interpretation in **§7**.
 
-Report drawdown **both ways** — closed-trade cumulative (their convention, §4.5)
-and intratrade-touch (this repo's `PropFirmTracker`). Two numbers, one run, and
-the difference isolates how much of the −$212 claim was accounting rather than
-fills.
-
-> **Prediction, recorded so it can be wrong:** a large loser. The reported edge
-> requires the ~60-tick/trade subsidy of §4.2; without it, a 120-tick target
-> against a Donchian-band stop measured on 180-tick-range bars is poor
-> risk/reward, and ~8,000 trades cost ~$8,300 in commission alone. Expect the
-> $2,000 floor to breach.
+> **Prediction, recorded so it can be wrong — and it was wrong.** I predicted "a
+> large loser". It came back **net +$13,486, Sharpe 1.16**. Wrong in direction;
+> right in substance (no usable edge, floor breached in week three). What the
+> subsidy inflated was the win rate and profit factor, not the sign. See §7.4.
 
 **Stage 2b — measure the subsidy directly.** ✅ **DONE 2026-08-11, confirmed.**
 Ran as soon as the bar type landed, since it needs bars but no strategy: for
@@ -537,3 +538,114 @@ on a new bar type, which is reusable knowledge.
    `EnableTradeLogging` must have been on, and the log records `ProfitTicks` per
    round trip — so recompute drawdown intratrade rather than reusing the
    dashboard's closed-trade figure (§4.5).
+
+---
+
+## 7. Stage 2 result — MNQ w120, honest fills, run 2026-08-11
+
+`strategies/hilo_rider.py`, MNQ `w120`, lookback 25, TP 120t, stop = opposite
+Donchian band − 2t, HighLow trail (min 40t, stages 5/6/10), MaxBarsInTrade 10,
+market entry, session `("18:00","16:55")` ET, 1 contract, $2,000 prop floor,
+2024-12-16 → 2026-08-07 (501 days).
+
+| | reported (§4.1) | **measured here** |
+|---|---|---|
+| trades | 7,950 | **9,199** |
+| win rate | 88.5% | **65.1%** |
+| profit factor | 7.80 | **1.04** |
+| Sharpe | 19.193 | **1.16** |
+| max drawdown | −$212 | **−$5,665.58 (−11.04%)** |
+| net | (implied ~$368k) | **+$13,486.04** |
+| prop floor | — | **BREACHED 2025-01-07**, MC P(breach) **70.4%** |
+
+Gross $23,053, commission $9,567 on 9,199 round turns. 9,361 signals → 9,193
+entries; slot attribution **2,001 crossover / 7,192 slope**, confirming §1.1 —
+`Signal2` does ~78% of the work. Avg win $59.68 (= the 120-tick target ×
+$0.50), avg loss $107.15. The edge is arithmetically thin and fully explained:
+`0.651 × 59.68 − 0.349 × 107.15 = +$1.46/trade`, matching the reported avg
+trade of $1.47.
+
+Trade count within 16% of the author's 7,950 is a useful cross-check that the
+signal port is faithful.
+
+### 7.1 The claimed edge is a fill artifact, confirmed
+
+Sharpe 19.193 → **1.16**. PF 7.80 → **1.04**. WR 88.5% → **65.1%**. Max
+drawdown −$212 → **−$5,666, twenty-seven times worse**. Nothing about the
+strategy changed between those two columns except that fills resolve on real
+ticks here. §4.2's measured ~86-tick-per-trade Heikin-Ashi subsidy accounts for
+the gap: it converts a 65%-win coin-flip into an 88.5%-win machine and hides the
+drawdown entirely.
+
+### 7.2 A data defect makes even +$13,486 an overstatement
+
+**60% of the net profit comes from 80 trades (0.9%) that fill against a crossed
+quote** — an event whose recorded `bid > ask`:
+
+| | trades | net | win rate |
+|---|---|---|---|
+| touching a crossed quote | **80** | **+$8,066.30** | 82.5% |
+| clean | 9,119 | **+$5,419.74** | 65.0% |
+
+Worked example, 2025-02-12 13:30:14.312 UTC — one event, `price 21650.00,
+bid 21779.75, ask 21564.50` (bid **861 ticks above** the ask). The strategy
+shorted at the inverted bid and its target bought back at the inverted ask, both
+off that single record: +$429.46 in zero seconds with MAE and MFE both 0.00.
+
+Repo-wide census, MNQ 2024-12-16 → 2026-08-07: **702 crossed-quote events on
+450 of 541 days**, median cross 478 ticks, max 1,802. 467 of them sit at
+22:00/23:00 UTC (**18:00/19:00 ET — the Globex reopen**), all stamped
+`22:00:00.1xx`: `_reduce_raw` carries the prevailing bid/ask across the
+17:00–18:00 halt without invalidating it, so the first print after reopen pairs
+a stale quote with a fresh one. This is **not specific to HiLoRider** — any
+strategy that can trade in the first moments after the reopen is exposed. See
+the CLAUDE.md "Conventions & gotchas" entry.
+
+So the contamination-free estimate is **≈ +$5,420 over 19 months on 9,119
+trades = +$0.59/trade**, i.e. ~1 tick of gross edge per trade after commission.
+(First-order: excising trades from a log is not the same as re-running without
+them, but the direction is unambiguous.)
+
+### 7.3 And what survives is concentrated in very fast trades
+
+| | trades | net |
+|---|---|---|
+| held < 10 s | 689 | **+$28,304.94** |
+| held ≥ 10 s | 8,510 | **−$14,818.90** |
+
+The sub-10-second book is worth more than the entire gross profit; everything
+held longer loses. Some of that is the crossed-quote trades above, but not all —
+Wave-120 bars complete on a 60-tick move, so in a fast trend three bars and a
+120-tick target can resolve inside a few seconds, and those are genuine fills.
+Either way the profile is the opposite of robust, and it is exactly what the
+repo's `sub10s_*` diagnostic exists to surface.
+
+### 7.4 Verdict
+
+**HiLoRider does not have a deployable edge, and must not be run on a prop
+account.** It breached the $2,000 trailing floor on **2025-01-07**, about three
+weeks into the sample, with a 70.4% Monte Carlo breach probability. Strip the
+crossed-quote contamination and the remaining edge is ~1 tick per trade before
+it; strip the sub-10-second trades and it is decisively negative.
+
+The strategy is not *garbage* — a 65% win rate on a with-trend Donchian signal
+is a real, if tiny, effect, and gross P&L is positive. It is simply nowhere near
+what was reported, and the 9,567 dollars of commission on 9,199 round turns is
+of the same order as the entire gross edge. Trading it at 1 MNQ contract has
+roughly the expectancy of paying the exchange for the privilege.
+
+Stages 3–5 are **not worth running until the crossed-quote data defect is
+fixed**, because every number they produce would carry the same 60%
+contamination. Sequence from here:
+
+1. Fix the reopen quote-carry defect in `_reduce_raw` (CACHE_VERSION bump,
+   ~1 GB/symbol rebuild, and **every existing champion result needs
+   re-validating** — that is the user's call, not a side effect to slip in).
+2. Re-run Stage 2 clean to get the real headline.
+3. Only then Stage 3 (the shipped `bid − 8` passive limit and its
+   blocks-everything behaviour) and Stage 4 (MGC, capped at 2026-07-28 by the
+   contract expiry noted in Stage 0).
+
+Raw data: `reports/HiLoRider_MNQ_trades.csv`, `reports/HiLoRider_MNQ.html`
+(both gitignored; re-run
+`cli.py strategies/hilo_rider.py --start 2024-12-16 --end 2026-08-07`).

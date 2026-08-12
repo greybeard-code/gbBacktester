@@ -206,6 +206,25 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   correct-bar counts at exactly 341/286/316/267 while only the denominator
   grows. Certifying MGC past 07-27 needs contract MGC 08-26 recorded (see
   TBars_spec §9).
+- **HiLoRider (Khahn, 2026-08-11) FAILED validation and must not be deployed.**
+  `strategies/hilo_rider.py`, writeup `nt8 code/HiLoRider/HiLoRider.md`. Wave-120
+  Donchian trend-follower: enter with the trend when the HiLoBands midline ticks
+  your way and the bar closes your way (its `Signal2` slope slot does 78% of the
+  work, so it enters on most with-trend bars while flat), TP 120t, stop at the
+  opposite channel band, 3-stage HighLow trail. Reported by the author as Sharpe
+  19.193 / WR 88.5% / PF 7.80 / MaxDD -$212 on 7,950 MNQ trades (~$368k/yr on one
+  micro). **On real-tick fills: Sharpe 1.16, WR 65.1%, PF 1.04, MaxDD -$5,666
+  (27x worse), net +$13,486 on 9,199 trades, and it BREACHED the $2k floor on
+  2025-01-07 with MC P(breach) 70.4%.** Cause, derived AND measured: a Wave bar's
+  Heikin-Ashi close lags the tradable price by **5N/7 ticks** (86 at N=120;
+  median 88 measured on both MNQ and MGC, favourable on 99.8% of bars), so a
+  close-filled backtest is handed ~71% of its 120-tick target on every trade.
+  Trade count within 16% of the author's is a good sign the signal port is
+  faithful. Two further caveats on even the +$13,486: 60% of it came from the
+  crossed-quote data defect above, and the >=10s book is -$14,819 (all the profit
+  is in 689 sub-10s trades). Stages 3-5 of the test plan (the shipped `bid - 8`
+  passive limit; MGC) are ON HOLD until the crossed-quote defect is fixed, since
+  every number would carry the same contamination.
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine
@@ -408,6 +427,28 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   reports, hour attributions) — explicit user preference 2026-07-05; their
   PC/NT8/community all run ET. Do NOT express times in CT, even though CME
   is a Chicago exchange. Internals remain int64 ns UTC.
+- **CROSSED QUOTES in the reduced cache — OPEN DEFECT, found 2026-08-11.**
+  `_reduce_raw` carries the prevailing bid/ask forward across the 17:00-18:00 ET
+  halt without invalidating it, so the first prints after the 18:00 reopen pair
+  a stale quote with a fresh one and come out **inverted (bid > ask)**. Census on
+  MNQ 2024-12-16..2026-08-07: **702 events on 450 of 541 days**, median cross
+  478 ticks, max 1,802; 467 of them at 22:00/23:00 UTC (18:00/19:00 ET), all
+  stamped `22:00:00.1xx`. Smaller clusters at 13:00/14:00 UTC (08:30/09:30 ET
+  releases). **This is free money for any strategy that can trade just after the
+  reopen**, because the broker fills a market entry at the (inverted) opposite
+  quote and its target at the other side of the same corrupt record — one event,
+  zero seconds, MAE/MFE both 0.00. Worked example 2025-02-12 13:30:14.312 UTC:
+  `price 21650.00, bid 21779.75, ask 21564.50` -> a short "earned" $429.46
+  instantly. Measured impact on the HiLoRider Stage 2 run: **80 of 9,199 trades
+  (0.9%) carried +$8,066 of the +$13,486 net, i.e. 60% of all profit**
+  (`nt8 code/HiLoRider/HiLoRider.md` §7.2). NOT YET FIXED — the fix belongs in
+  `_reduce_raw` (drop or invalidate the carried quote after a gap), needs a
+  CACHE_VERSION bump and a ~1 GB/symbol rebuild, and **every existing validated
+  result would need re-checking**, so it is the user's call. Until then: treat
+  any result whose P&L concentrates in 0-second trades as suspect, and check
+  exposure for anything trading near 18:00 ET. The evening GZK champion
+  (20:00-20:45 ET = 00:00-01:00 UTC) sits in a low-count window (7 events) but
+  has not been re-checked.
 - Order flow: reduced cache stores prevailing bid/ask sizes and per-trade
   aggressor side (+1 at/above ask, -1 at/below bid); bars carry
   buy_volume/sell_volume, `bar.delta`, `bars.cum_delta` (reset per session).
