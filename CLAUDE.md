@@ -75,6 +75,16 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   never gated**. `news_flatten` force-flattens on window entry (engine, exit
   tag "news"). CLI `--news-filter/--news-pre/--news-post/--news-currencies/
   --news-flatten/--news-csv`. Off by default (champion re-runs bit-identical).
+  **The filter's SIGN is instrument-dependent — measure it, never assume
+  (2026-08-13).** On MNQ (GZK, below) a USD red-folder block slightly LOWERS
+  net by dropping winners near the 10:00 ET releases. On **MGC it clearly
+  helps**: HiLoRider v1.2 w120 goes $23,117 -> **$26,537** (Sharpe 2.12 ->
+  2.46, MC P(breach) 51.9% -> 45.1%) by removing 45 trades worth -$3,420, and
+  w80 moves the same way (+$2,756, Sharpe 0.92 -> 1.18). Gold is a direct
+  USD/rates instrument in a way an equity index is not, so the same release is
+  noise to trade through on MNQ and a hazard on MGC. Window used was Khahn's
+  own 5 min pre / 20 post (see the EconomicCalendar.py entry below), not this
+  repo's ±5 default.
   Motivating case was the Drew GZK request, but that thread is CLOSED: Drew's
   "$4k last 30 days / $1,100 DD" came from **NT8 Strategy Analyzer on Renko
   bars**, whose synthetic-brick fills are the fantasy-fill artifact this repo
@@ -213,18 +223,79 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   work, so it enters on most with-trend bars while flat), TP 120t, stop at the
   opposite channel band, 3-stage HighLow trail. Reported by the author as Sharpe
   19.193 / WR 88.5% / PF 7.80 / MaxDD -$212 on 7,950 MNQ trades (~$368k/yr on one
-  micro). **On real-tick fills: Sharpe 1.16, WR 65.1%, PF 1.04, MaxDD -$5,666
-  (27x worse), net +$13,486 on 9,199 trades, and it BREACHED the $2k floor on
-  2025-01-07 with MC P(breach) 70.4%.** Cause, derived AND measured: a Wave bar's
+  micro). **On real-tick fills, on the CLEAN cache (re-run 2026-08-12 after the
+  crossed-quote fix): Sharpe 0.56, WR 65.0%, PF 1.02, MaxDD -$6,897, net
+  +$6,372.72 on 9,182 trades, and it BREACHED the $2k floor on 2025-01-07 with
+  MC P(breach) 82.5%.** (Pre-fix figures, now superseded but quoted in
+  HiLoRider.md: Sharpe 1.16, PF 1.04, net +$13,486 / 9,199 trades, P(breach)
+  70.4% — 53% of that net was the data defect.) Cause, derived AND measured: a Wave bar's
   Heikin-Ashi close lags the tradable price by **5N/7 ticks** (86 at N=120;
   median 88 measured on both MNQ and MGC, favourable on 99.8% of bars), so a
   close-filled backtest is handed ~71% of its 120-tick target on every trade.
   Trade count within 16% of the author's is a good sign the signal port is
-  faithful. Two further caveats on even the +$13,486: 60% of it came from the
-  crossed-quote data defect above, and the >=10s book is -$14,819 (all the profit
-  is in 689 sub-10s trades). Stages 3-5 of the test plan (the shipped `bid - 8`
-  passive limit; MGC) are ON HOLD until the crossed-quote defect is fixed, since
-  every number would carry the same contamination.
+  faithful. Caveat on even the +$6,372: the >=10s book is **-$16,282** — all
+  the profit and more is in 671 sub-10s trades worth +$22,655.
+- **HiLoRider v1.2 (2026-08-13): MGC Wave 80 FAILED; MGC Wave 120 is the first
+  honest positive this strategy has produced, but is NOT validated.**
+  `strategies/hilo_rider_v12.py` (subclass of the v1.0 port), writeup
+  `nt8 code/HiLoRider/HiLoRider.md` §8, source `HiLoRider v1.2 08-12-26/`.
+  The SIGNAL is unchanged — HiLoBands.cs differs only in chart rendering,
+  HiLoRiderStopModes.cs is byte-identical, and ~2,000 of the changed lines are
+  execution-safety/ops plumbing that cannot move a backtest. Six things do:
+  **TargetMode=NoTarget** (was FixedTicks 120t; `HiLoRider.cs:1230` also
+  force-sets TrailMode=HighLow whenever NoTarget is picked, so SetDefaults'
+  MidlineOffset never applies), MaxBarsInTrade 10->14, a **1-bar TTL on the
+  resting limit entry** (v1.0 never cancelled it, which is why market entry was
+  the only honest v1.0 baseline), LimitOffsetTicks 8->12, a new
+  **MaxEntrySpreadTicks=3** gate that fails CLOSED, and historical bar offset
+  ->0 (what this port already did). **NoTarget deletes the exact mechanism
+  §4.2 blamed for the fantasy numbers** — no 120t target left for the 5N/7 HA
+  close lag to hand over — and the trail/band-stop read Wave bars' REAL
+  high/low, so v1.2's exit geometry is real-price throughout. It earns its own
+  number rather than inheriting v1.0's verdict.
+  MGC, 2025-01-01..**2026-07-29** (window forced by data: the recorded MGC
+  contract dies after 07-29), 1 contract, $2k floor:
+  **w120 market +$23,117 / 1,494 tr / PF 1.19 / Sharpe 2.12 / maxDD -$10,174,
+  survived w/ $1,314 headroom but MC P(breach)=51.9%, P(pass $3k)=54.3%.**
+  **w80 market +$9,619 / 3,209 tr / PF 1.05 / Sharpe 0.92, BREACHED the floor
+  2025-06-18** (P(breach) 78.8%), and on the shipped limit entry w80 is
+  outright negative (-$4,239, PF 0.97, P(breach) 96.7%). Halving the wave size
+  doubles trades and quadruples commission ($4,300 vs $2,002) while per-trade
+  edge collapses $15.47 -> $3.00 — same "edge does not scale down with bar
+  size" shape as YM r40-10/r20-5. w120 survives the artifact checks (4 sub-10s
+  trades worth -$114, median hold 61 min, 15 of 19 months positive, top-20
+  trades 43% of net) but has had **zero out-of-sample testing** — needs
+  walkforward.py before it is a candidate, and a 51.9% breach probability makes
+  it undeployable on a $2k floor regardless. Raw data
+  reports/hilorider_v12_mgc_matrix.csv, reports/HiLoRiderV12_MGC_w{120,80}.html.
+  **DEFECT to ask Khahn about:** v1.2's `State.DataLoaded` sets MGC
+  `LookbackPeriod = 8` and MNQ `= 5`, while its own Print(), the property
+  description, the class Description and the module header ALL say 10 and 25 —
+  which are precisely **v1.0's code values, left behind**. So 5/8 is either an
+  undocumented re-tune or an accidental edit that shipped. Code wins on a live
+  chart, so the port defaults to 8; lb10 is run as a sensitivity (better on
+  w80, worse on w120 — not a plateau). Also `strategyEnabled` now defaults to
+  **false**, so v1.2 as shipped takes zero trades in Strategy Analyzer. The MNQ
+  side of v1.2 is untested — its profile changed too, so §7's MNQ verdict does
+  not automatically transfer.
+- **`EconomicCalendar.py` (found 2026-08-13, HiLoRider.md §8.6)** — Khahn's
+  third shipped Python tool, and like the two in §4.4 it is a **live tool, not
+  a backtest input**: it fetches TODAY's high-impact USD ForexFactory events,
+  scores an equity bias, and writes `calendar_latest.json`, which
+  `HiLoRiderEconCalendar.cs` reads at DataLoaded for `allow_longs/allow_shorts/
+  reduce_size` + block windows of **5 min before / 20 after**. Three structural
+  problems: (a) today-only (`calDate.Date == DateTime.Today`), no history, so
+  NT8 cannot backtest it; (b) in a historical run `IsInCalendarNewsBlock()`
+  compares `Time[0]`'s ET **time-of-day** against today's windows, so it would
+  silently suppress e.g. 08:25-08:50 ET on EVERY past day; (c) **no off
+  switch** — `CheckNewsBlock()` calls it BEFORE the `EnableNewsBlock` test, so
+  the default `EnableNewsBlock=false` doesn't disable it. Also the bias score
+  is dead in practice: run at 08:00 ET as its guide instructs, `actual` is
+  empty for every event, so `bias_score` is ~always 0 -> NEUTRAL; only the
+  block windows do anything.
+  Base-port additions for this (all default-off, v1.0 re-runs bit-identical):
+  `max_entry_spread_ticks`, TTL cancel now skips the bar (faithful to NT8's
+  async `IsEntryStateClear`), `fixed_tp_ticks=0` -> no target leg.
 - **strategy.py** — Strategy base (on_start/on_bar/on_fill/on_session_end/
   on_finish; buy_bracket, move_stop, move_stop_to_breakeven, ...).
   Multi-timeframe: declare `secondary_periods` (e.g. ["15m"]); the engine
@@ -427,28 +498,68 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   reports, hour attributions) — explicit user preference 2026-07-05; their
   PC/NT8/community all run ET. Do NOT express times in CT, even though CME
   is a Chicago exchange. Internals remain int64 ns UTC.
-- **CROSSED QUOTES in the reduced cache — OPEN DEFECT, found 2026-08-11.**
-  `_reduce_raw` carries the prevailing bid/ask forward across the 17:00-18:00 ET
-  halt without invalidating it, so the first prints after the 18:00 reopen pair
-  a stale quote with a fresh one and come out **inverted (bid > ask)**. Census on
-  MNQ 2024-12-16..2026-08-07: **702 events on 450 of 541 days**, median cross
-  478 ticks, max 1,802; 467 of them at 22:00/23:00 UTC (18:00/19:00 ET), all
-  stamped `22:00:00.1xx`. Smaller clusters at 13:00/14:00 UTC (08:30/09:30 ET
-  releases). **This is free money for any strategy that can trade just after the
-  reopen**, because the broker fills a market entry at the (inverted) opposite
-  quote and its target at the other side of the same corrupt record — one event,
-  zero seconds, MAE/MFE both 0.00. Worked example 2025-02-12 13:30:14.312 UTC:
-  `price 21650.00, bid 21779.75, ask 21564.50` -> a short "earned" $429.46
-  instantly. Measured impact on the HiLoRider Stage 2 run: **80 of 9,199 trades
-  (0.9%) carried +$8,066 of the +$13,486 net, i.e. 60% of all profit**
-  (`nt8 code/HiLoRider/HiLoRider.md` §7.2). NOT YET FIXED — the fix belongs in
-  `_reduce_raw` (drop or invalidate the carried quote after a gap), needs a
-  CACHE_VERSION bump and a ~1 GB/symbol rebuild, and **every existing validated
-  result would need re-checking**, so it is the user's call. Until then: treat
-  any result whose P&L concentrates in 0-second trades as suspect, and check
-  exposure for anything trading near 18:00 ET. The evening GZK champion
-  (20:00-20:45 ET = 00:00-01:00 UTC) sits in a low-count window (7 events) but
-  has not been re-checked.
+- **CROSSED QUOTES in the reduced cache — FIXED 2026-08-12** (found 2026-08-11;
+  CACHE_VERSION 3->4, BARS_VERSION 8->9, full rebuild done, all validated
+  results re-checked — see the table below).
+  A crossed quote means one side of the book is STALE. `prevailing()` is
+  correct by construction (it takes the last quote at or before the trade), so
+  when it pairs a fresh side with an hours-old one the result comes out
+  **inverted (bid > ask)** and the broker fills a market entry at one side of
+  the corrupt record and its target at the other — one event, zero seconds,
+  MAE/MFE both 0.00, pure fabricated profit. Worked example, MNQ 2025-02-12
+  13:30:14.312 UTC: `price 21650.00, bid 21779.75, ask 21564.50` -> a short
+  "earned" $429.46 instantly.
+  **TWO failure modes, not one** (the 2026-08-11 note here blamed only the
+  halt): (a) the 17:00-18:00 ET halt, where the pre-halt quote carries to the
+  first print after the 18:00 reopen — 422 of 1,007 post-gap runs on MNQ, 361
+  of 1,097 on MGC; (b) **recorder throttling in fast markets** — 5-12 s buckets
+  of 100-500 contracts around the 08:30/10:00 ET releases (13:00/14:00 UTC),
+  nowhere near any gap, ~175 more on MNQ. Full MNQ census (541 days, 681M trade
+  events): 702 crossed, 1.03 per million, 92% deeper than 100 ticks (median
+  478, max 1,802).
+  **THE FIX IS AN INVARIANT GUARD, NOT A POSITIONAL RULE** —
+  `data._invalidate_crossed` NaNs both sides (and zeroes the sizes) wherever
+  `bid > ask`, called from `_reduce_raw`. Two alternatives were measured and
+  rejected: **"drop the first tick after a gap"** catches only 60% on MNQ and
+  41% on MGC (it cannot see mode (b) at all) and would delete real prints of
+  6-526 contracts, shifting the 18:00 bar's open/volume — exactly where the
+  Wave and TBars parity gates are anchored; **a spread-width threshold** is
+  unusable because 4.36M MNQ events (0.64%) exceed 8 ticks as ordinary
+  fast-market widening. The trade PRICE is good, only the quote is bad, so the
+  price is kept and the quote is dropped. Crossing is also a near-COMPLETE
+  detector, which was measured rather than assumed: on the 340 non-crossed
+  post-gap first ticks `|price - mid|` is median 1 tick / p90 2 ticks (only 6
+  beyond 20), i.e. there is no large population of "both sides stale, spread
+  looks normal" events hiding behind the guard.
+  NaN needed no new downstream handling — it was already the documented
+  "before first quote" state, `broker._fill_price` falls back to the trade
+  price, and a NaN quote is never marketable at first evaluation. It also fixes
+  a silent order-flow bug for free: a crossed quote satisfies BOTH
+  `price >= ask` and `price <= bid`, so `classify_aggressor` was tagging every
+  one of these as a SELL; they are now 0 (unknown). That is why BARS_VERSION
+  moved too — bar OHLC/ts/volume/spans are bit-identical (no event is dropped)
+  but buy_volume/sell_volume/delta shift.
+  Post-rebuild verification, all 5 symbols, 1,174,827,166 events:
+  **crossed remaining = 0**; 4,346 events (3.70 per million) now carry an
+  unknown quote, which includes the pre-existing "before the first quote of the
+  file" ones. Tests: `tests/test_crossed_quotes.py`.
+  **RE-VALIDATION (2026-08-12, every recorded baseline):**
+  | config | before | after |
+  |---|---|---|
+  | GZK MNQ evening champion | $2,803.20 / 140 tr / PF 1.39 / P(breach) 13% | **identical** ($2,803.20 / 140 / 1.39 / 13.3%) |
+  | YM Three Amigos r80-20 | $7,599.80 / 92 tr / Sharpe 2.05 / P(breach) 3.2% | **identical** |
+  | Terminator champion (r100-4) | $22,422 / 994 tr / Sharpe 3.89 / headroom $677 | $22,074.88 / 1003 tr / Sharpe 3.81 / headroom $676.76 (**-$347, -1.5%**) |
+  | HiLoRider (already FAILED) | $13,486 / 9,199 tr / Sharpe 1.16 | **$6,372.72** / 9,182 tr / Sharpe 0.56 (**-$7,113, -53%**) |
+  Both champions with recorded prop-firm numbers are untouched. The Terminator
+  was the one at risk — its session deliberately covers the 18:00 ET reopen,
+  which its own docstring calls "the single best hour in the whole 510-day
+  dataset (+$4,278)" — and it gives back only $347 across 400 days, with 9
+  extra trades from fill-price cascades. **The edge is not the artifact.**
+  (Note `strategies/terminator_rec.py`'s docstring still quotes the older
+  pre-renko-fix $22,409/990; the live record is
+  `NinjaScript/TerminatorV2/TerminatorV2.md`, updated 2026-08-12.)
+  HiLoRider loses 53% of its net, closely matching the 60% that
+  `nt8 code/HiLoRider/HiLoRider.md` §7.2 predicted; it stays FAILED, harder.
 - Order flow: reduced cache stores prevailing bid/ask sizes and per-trade
   aggressor side (+1 at/above ask, -1 at/below bid); bars carry
   buy_volume/sell_volume, `bar.delta`, `bars.cum_delta` (reset per session).
@@ -475,11 +586,11 @@ ended up producing the most validated, actionable result in this repo. Full
 narrative is in the session's Word docs (`reports/GodZillaKilla_Backtest_
 Findings.docx`, `GodZillaKilla_RealMoney_ReEvaluation.docx` — both gitignored,
 regenerate via the scratch scripts noted below if needed); this is the
-distilled, load-bearing summary. **No committed `strategies/*.py` file
-encodes this yet** — configure a `GodZillaKilla()` instance per the settings
-below (see `strategies/godzilla_killa.py` for the attribute names), same
-pattern as the `_run` functions in the (uncommitted, scratchpad-only) sweep
-scripts this study used.
+distilled, load-bearing summary. Both configs below ARE committed:
+`strategies/godzilla_evening_confluence.py` (prop-firm) and
+`..._realmoney.py` (real-money) — corrected 2026-08-12, this note used to
+say no file encoded them. For a variant, subclass `GodZillaKilla` the same
+way (see `strategies/godzilla_killa.py` for the attribute names).
 
 **Methodology, so the numbers below can be trusted without rederiving them:**
 the strategy's raw backtest looked profitable almost everywhere at first, but
@@ -805,10 +916,25 @@ window-end flatten disabled) — see NinjaScript/TerminatorV2/TerminatorV2.md §
   not a roadmap item; the repo's real order-flow edge (aggressor side +
   quote sizes, see below) is L1-only.
 
-Validation reference run (EmaCross, MNQ 1m, defaults, cache v2/v3 —
-post-timestamp-fix 2026-07-05): net ~-$2,125, 2102 trades, WR 33.4%,
-Sharpe -2.05, maxDD -$3,244, breach 2026-04-22. (The strategy is a loser on
-true RTH; it's a regression canary, not an edge.) If a refactor moves these
-numbers materially without an intentional fill-model/data change, something
-broke. Terminator corrected headline: session 14:00-20:55 ET + 200t stop =
+Validation reference run — **RE-BASELINED 2026-08-12** (EmaCross, MNQ 1m,
+defaults, cache v4 / bars v9, full history `20241216..20260807`, 503 trading
+days): net **-$10,290.20**, **6705 trades**, WR 32.6%, PF 0.89,
+Sharpe -3.02, maxDD -$10,735.70, breach 2025-05-22. (The strategy is a loser
+on true RTH; it's a regression canary, not an edge.) If a refactor moves
+these numbers materially without an intentional fill-model/data change,
+something broke.
+**The old line here (net ~-$2,125, 2102 trades, cache v2/v3, "2026-07-05")
+was already stale before the crossed-quote fix and could NOT be reproduced.**
+It is not a regression from that fix, and the reasoning is worth keeping
+because it generalises: time-bar OHLC is built from `price`/`volume`/`ts`,
+none of which `_invalidate_crossed` touches, and EmaCross reads only
+`bar.close` — so its **signal stream is provably bit-identical** across the
+change and only fills could differ. Only 218 quote-unknown events fall inside
+its 09:30-16:00 ET session, out of 680,875,000, which cannot turn 2,102
+trades into 6,705. The drift came from something between the initial commit
+and now (BARS_VERSION 6->7->8, the renko day-boundary fix, the Tradovate
+commission calibration, ~13 months more data) and was never re-baselined.
+**Lesson: re-run the canary WITH each intentional data/fill change, or it
+silently stops being a canary.**
+Terminator corrected headline: session 14:00-20:55 ET + 200t stop =
 net ~$7,142, Sharpe 2.87 (see strategy/ reports).

@@ -100,6 +100,10 @@ class HiLoRider(Strategy):
     # 0 = market, which is the honest baseline (HiLoRider.md §6 Stage 2).
     entry_limit_offset_ticks = 0
     entry_limit_ttl_bars = 0      # 0 = never cancel, reproducing NT8's GTC
+    # v1.2's LiquidityFilterPasses: block a signal when the prevailing spread at
+    # the bar close is wider than this (equality passes), or when the quote is
+    # unknown (fail closed). 0 = off, which is v1.0 behaviour.
+    max_entry_spread_ticks = 0
 
     # ---- gates -----------------------------------------------------------
     hour_block = (1, 5)           # ET hours blocked INCLUSIVE; None = off
@@ -148,7 +152,8 @@ class HiLoRider(Strategy):
         self.entry_bar = -1
         self.n_signals = 0
         self.n_blocked = {"window": 0, "rth": 0, "hour": 0, "cooldown": 0,
-                          "gap": 0, "entry-resting": 0}
+                          "gap": 0, "entry-resting": 0, "entry-ttl": 0,
+                          "spread": 0}
         self.bars_in_position = 0
         self.slot_counts = {"crossover": 0, "slope": 0}
         self.entries = 0
@@ -235,6 +240,26 @@ class HiLoRider(Strategy):
         if not (0 <= after <= self.gap_block_min):
             return False
         return (sig == -1 and self.gap_dir == 1) or (sig == 1 and self.gap_dir == -1)
+
+    def _spread_blocked(self, bar) -> bool:
+        """v1.2 LiquidityFilterPasses, modelled on the prevailing quote at the
+        bar's close (the same quote NT8's GetCurrentBid/Ask would return at that
+        instant). Fails CLOSED on an unknown quote, exactly as the .cs does —
+        which also means the crossed-quote events NaN'd out by
+        `data._invalidate_crossed` block an entry rather than pricing one.
+        """
+        if self.max_entry_spread_ticks <= 0:
+            return False
+        day = getattr(self._broker, "_day", None)
+        if day is None or len(day) == 0:
+            return True
+        i = int(day.ts.searchsorted(bar.ts, side="right")) - 1
+        if i < 0:
+            return True
+        bid, ask = float(day.bid[i]), float(day.ask[i])
+        if not (bid > 0 and ask > 0) or bid != bid or ask != ask or ask < bid:
+            return True
+        return (ask - bid) / self._tick - self.max_entry_spread_ticks > 1e-9
 
     # ---- signal ----------------------------------------------------------
     def _signal(self, bar) -> int:
@@ -414,16 +439,16 @@ class HiLoRider(Strategy):
             # entryOrder only on Filled/Cancelled/Rejected)
             resting = [o for o in self.working_orders if not o.is_exit]
             if resting:
-                if self.entry_limit_ttl_bars > 0:
-                    age = cb - self.entry_bar
-                    if age >= self.entry_limit_ttl_bars:
-                        self.cancel_all()
-                    else:
-                        self.n_blocked["entry-resting"] += 1
-                        return
+                if (self.entry_limit_ttl_bars > 0
+                        and cb - self.entry_bar >= self.entry_limit_ttl_bars):
+                    # v1.2's stale-limit-entry cancel. NT8 cancels ASYNC and
+                    # `IsEntryStateClear()` still sees the order as active for
+                    # the rest of this bar, so this bar cannot re-enter.
+                    self.cancel_all()
+                    self.n_blocked["entry-ttl"] += 1
                 else:
                     self.n_blocked["entry-resting"] += 1
-                    return
+                return
 
             if not self._in_tf_window(bar.ts):
                 self.n_blocked["window"] += 1
@@ -447,15 +472,19 @@ class HiLoRider(Strategy):
             if self._gap_blocked(sig, bar.ts):
                 self.n_blocked["gap"] += 1
                 return
+            if self._spread_blocked(bar):
+                self.n_blocked["spread"] += 1
+                return
 
             tick = self._tick
             ref = self._ref_price(bar)
             self.pending_stop = self._band_stop(sig, ref)
             # stop_ticks here is only a placeholder that makes the bracket
             # create a stop leg; on_fill immediately re-places it at the
-            # absolute band price above.
+            # absolute band price above. target_ticks=None reproduces v1.2's
+            # TargetMode=NoTarget (no profit target at all, trail-only exits).
             kw = dict(stop_ticks=self.fixed_sl_ticks,
-                      target_ticks=self.fixed_tp_ticks)
+                      target_ticks=self.fixed_tp_ticks or None)
             self.entry_bar = cb
             if self.entry_limit_offset_ticks > 0:
                 px = ref - sig * self.entry_limit_offset_ticks * tick

@@ -69,8 +69,14 @@ def _eastern_offset_ns(date: str) -> int:
     return int(midday.utcoffset().total_seconds() * 1e9)
 
 
-CACHE_VERSION = b"3"   # reduced: v3 = trust replay_importer UTC tag, else ET->UTC
-BARS_VERSION = b"8"    # bars: v8 = saber/tbars carry accumulated volume across
+CACHE_VERSION = b"4"   # reduced: v4 = crossed quotes (bid > ask) invalidated to
+                       # NaN (see _reduce_raw); v3 = trust replay_importer UTC
+                       # tag, else ET->UTC
+BARS_VERSION = b"9"    # bars: v9 = follows CACHE_VERSION 4 — OHLC/ts/volume/
+                       # spans are bit-identical (no trade event is dropped),
+                       # but the 702 MNQ crossed events stop counting as
+                       # aggressor sells, so buy_volume/sell_volume/delta move;
+                       # v8 = saber/tbars carry accumulated volume across
                        # day-file boundaries (end_state grew 3 fields, so an
                        # old cache's end_state would fail to unpack); v7 =
                        # renko brick state carries across day-file boundaries
@@ -136,6 +142,57 @@ class BarDay:
 
     def __len__(self) -> int:
         return len(self.ts_end)
+
+
+def _invalidate_crossed(bid: np.ndarray, ask: np.ndarray,
+                        bid_size: np.ndarray, ask_size: np.ndarray) -> int:
+    """Mark crossed quotes (bid > ask) unknown, in place. Returns the count.
+
+    A crossed quote means one side of the book is STALE: the recorder emitted
+    no update for it before the trade printed, so `prevailing()` (which is
+    correct by construction — it takes the last quote at or before the trade)
+    pairs a fresh side with an hours-old one. Two failure modes, one shape:
+
+    * the 17:00-18:00 ET halt — the pre-halt quote carries to the first print
+      after the 18:00 reopen (MNQ: 422 of 1,007 post-gap runs; MGC 361/1,097);
+    * recorder throttling in fast markets — 5-12 s buckets of 100-500 contracts
+      around the 08:30/10:00 ET releases, nowhere near a gap (MNQ: ~175 more).
+
+    Census over MNQ 2024-12-16..2026-08-07 (541 days, 681M trade events):
+    702 crossed, 1.03 per million, 92% of them deeper than 100 ticks (median
+    478, max 1,802). Left in, the broker fills an entry at one side of the
+    corrupt record and its target at the other — one event, zero seconds,
+    MAE/MFE both 0.00, pure fabricated profit.
+
+    Two rules were rejected in favour of this one, on measurement:
+
+    * **positional** ("drop the first tick after a gap") catches only 60% on
+      MNQ and 41% on MGC, and would delete real prints (6-526 contracts),
+      shifting the 18:00 bar's open/volume — which is exactly where the Wave
+      and TBars parity gates are anchored. The trade PRICE is good here; only
+      the quote is bad, so the price is kept and the quote is dropped.
+    * **spread width** is unusable: 4.36M MNQ events (0.64%) exceed 8 ticks
+      and that is ordinary fast-market widening.
+
+    NaN needs no new handling downstream: it is already the documented
+    "before first quote" state, `broker._fill_price` falls back to the trade
+    price, and a NaN quote is simply never marketable at first evaluation.
+    `classify_aggressor` also stops mis-tagging these events — a crossed quote
+    satisfies BOTH `price >= ask` and `price <= bid`, so before this guard
+    every one of them was silently recorded as a sell; NaN makes them 0
+    (unknown). That is why BARS_VERSION moved too: buy/sell volume shifts.
+
+    Sizes go to 0 (the int64 arrays' own "no quote" value) — a size without a
+    price is meaningless, and leaving it would let a depth filter trust it.
+    """
+    bad = bid > ask                 # NaN compares false, so no-quote is untouched
+    n = int(np.count_nonzero(bad))
+    if n:
+        bid[bad] = np.nan
+        ask[bad] = np.nan
+        bid_size[bad] = 0
+        ask_size[bad] = 0
+    return n
 
 
 def classify_aggressor(price: np.ndarray, ask: np.ndarray,
@@ -253,6 +310,7 @@ class Catalog:
 
         ask_p, ask_s = prevailing(MDT_ASK)
         bid_p, bid_s = prevailing(MDT_BID)
+        _invalidate_crossed(bid_p, ask_p, bid_s, ask_s)
         lp = price[last_idx]
         return DayL1(
             date=date,
