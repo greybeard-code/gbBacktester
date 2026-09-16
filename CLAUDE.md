@@ -384,6 +384,35 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   Don't compare TBars parity to ninZaRenko's
   96-100%: TBars emits a 4-way average of four rounded quantities, so one
   tick of divergence anywhere is structurally far more visible.
+- **gbPullback5Bar (2026-09-15) — first genuinely promising, walk-forward-
+  confirmed config; NOT yet live-ready.** Port of
+  `~/dev/NinjaScript/gpPullBack/gbPullback5Bar.cs` (GreyBeard, original
+  work) at `strategies/gb_pullback_5bar.py`. 5-bar reversal/pullback
+  continuation, no indicators: a bar whose direction flips against the
+  prior trend arms a pending trend; if a later bar (within
+  `pullback_bar_limit`=5) closes back through that pullback bar's open,
+  enter with the trend, stop beyond the pullback bar's own high/low,
+  fixed-tick target. Dre traded it live on ninZaRenko r64-16, RTH
+  09:30-16:00 ET; at that exact config it's a loser (net -$1,347, Sharpe
+  -0.32, breaches the $2k floor). Full sweep (bar size, bar type,
+  stop/target, session, instruments — logs/CSVs in
+  `reports/gb_pullback_5bar_sweeps/`): bar size shows a clean 6-point
+  plateau r88-136 (r112-28 best), bar type confirms renko-family bars are
+  load-bearing (time/tick bars catastrophic, Sharpe down to -13.40 at
+  500t), and walk-forward (5 windows, ratio 5) **converged on the same
+  {profit_target_ticks=50, stop_offset_ticks=1} in all 5 IS windows**, 4/5
+  profitable OOS, stitched WFE 0.85. At the shipped defaults (MNQ,
+  r112-28, stop1, target50, 09:30-16:00 ET): net **$4,988.72**, 2,632
+  trades, Sharpe 1.71, PF 1.11, maxDD -1.82%, survives the $2k floor
+  ($1,162.92 headroom), MC P(breach)=11.2%. Does NOT transfer to other
+  instruments even with dollar-scaled brick/target recalibration — MES/
+  MGC/YM all failed (MGC barely breakeven and still breaches, YM
+  catastrophic from overtrading a too-small brick) — the edge looks
+  MNQ-specific. Session-window sweep found several UNVALIDATED
+  higher-Sharpe alternatives (09:30-16:45 ET, and a 09:30-11:30
+  morning-only window) worth a follow-up walk-forward if pursued. Needs an
+  NT8 chart-parity check on r112-28 and a paper-trading trial before any
+  real size.
 
 ## Conventions & gotchas
 
