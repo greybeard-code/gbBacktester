@@ -4,6 +4,7 @@ reports/
 __pycache__/
 *.pyc
 .pytest_cache/
+.claude/
 
 # Vendor binaries are NEVER committed — this repository is PUBLIC, and the NT8
 # bar types/indicators snapshotted under "nt8 code/" are paid third-party

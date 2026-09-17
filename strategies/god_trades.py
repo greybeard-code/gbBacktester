@@ -466,9 +466,14 @@ class GodTrades(Strategy):
         t = datetime.fromtimestamp(ts_ns / 1e9, ET)
         return t.hour * 60 + t.minute
 
+    def _windows(self):
+        # entry_window is either one ("HH:MM", "HH:MM") pair or a list of them
+        # (multi-session templates, e.g. GodTradesZeusDewber)
+        w = self.entry_window
+        return [w] if isinstance(w[0], str) else w
+
     def _in_window(self, tod: int) -> bool:
-        s, e = _mins(self.entry_window[0]), _mins(self.entry_window[1])
-        return s <= tod < e
+        return any(_mins(s) <= tod < _mins(e) for s, e in self._windows())
 
     def on_bar(self, bar, bars):
         self._cur_bar = bar.index

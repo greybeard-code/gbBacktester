@@ -233,6 +233,43 @@ validated edge. Do not size this for live/sim trading without either (a)
 a materially different result on fresh data, or (b) explicit acceptance
 that this is a research artifact, not a strategy.
 
+## 6.5 gbZeus configs — full-history rerun (2026-09-13), both FAILED
+
+Two variants of the live NT8 `gbZeus` config, run NQ full-history
+(2024-12-16 → 2026-09-11, 573 calendar days / ~538-467 trading days
+depending on bar type, 1 contract, $2,000 prop floor, crossed-quote-fixed
+cache). Neither had been run over the full history before — §4-6 above are
+all the base `GodTrades` class with different filter/window tuning.
+
+* **`strategies/god_trades_zeus.py` (`GodTradesZeus`)** — the deck-faithful
+  config already in the repo: NQ 1000-tick, single 10:15-15:00 ET window.
+  Net **-$12,285.89**, 1995 trades, WR 28.3%, PF 0.97, Sharpe -0.34, maxDD
+  -$49,186 (-90%), **breached the $2k floor on day 3** (2024-12-19), MC
+  P(breach) 99.0%.
+* **`strategies/god_trades_zeus_dewber.py` (`GodTradesZeusDewber`, new)** —
+  built from the actual NT8 strategy templates a real trader ("Dewber") has
+  saved for gbZeus (found on the Overseer data host under
+  `templates/Strategy/GreyBeard.gbZeus/Dewber_NQ.xml`), which turn out to
+  differ from the deck in ways worth knowing about: **1-minute bars**, not
+  1000-tick, **two session windows** (09:00-10:00 + 13:00-16:00, times as
+  stored — no timezone tag in the template, assumed ET, unverified), and a
+  **$700 daily loss limit** (the sibling `_1m_Eval.xml` template is
+  otherwise identical, just DailyLoss=2000/DailyProfit=1500 for an eval
+  account). Everything else (BG+FC only, band-target exits, spiderweb
+  suppress 100t/5-line, MaxStopTicks=0, BB proximity 8t) already matched
+  what the deck-faithful port assumed. `god_trades.py`'s `entry_window` now
+  accepts a list of window pairs to support this. Result: net **-$13,768.77**,
+  2344 trades, WR 29.9%, PF 0.97, Sharpe -0.36, maxDD -$50,598 (-97%),
+  breached the floor, MC P(breach) 98.9% — and the $700 daily loss cap fired
+  on 217 of 538 trading days, which alone says that cap is too tight for 1
+  NQ contract's normal band-to-band swings under this exit model.
+
+**Both configs are decisive losers, consistent with §6's verdict on the base
+class** — the specific live parameter choices (tick chart vs. minute chart,
+window placement, daily loss cap) don't rescue the mechanical edge. Do not
+deploy either. Raw trade logs: `reports/GodTradesZeus_NQ_rerun_trades.csv`,
+`reports/GodTradesZeusDewber_NQ_trades.csv` (both gitignored).
+
 ## 7. Prop-firm / sizing note
 
 Every full-history and May–Jun run above breaches a $2,000 Apex-style
