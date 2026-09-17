@@ -90,48 +90,33 @@ but it has NOT had an NT8 chart-parity check on this specific renko size,
 nor a live/paper-trading trial, and the session-window improvements above
 are still unvalidated upside. Treat as a strong candidate, not a champion.**
 
-**OPEN BUG, found 2026-09-16, NOT YET ROOT-CAUSED: our ninZaRenko builder
-diverges from a real NT8 Market Replay at r112-28 partway through a
-multi-day run.** User ran gbPullback5Bar live in NT8 Market Replay
-(ninZaRenko Brick=112/Reversal=28, confirmed by the user — NOT a guess),
-MNQ 09-26, 2026-08-31..2026-09-11, exported the executions grid (42 round
-trips). Reconstructed round trips confirm `profit_target_ticks=50` exactly
-(35/36 profit-target exits at precisely 50 ticks) and that the live .cs
-does NOT flatten at session end (one trade rode 15:55->17:56 ET past the
-16:00 close) — so `flat_at_session_end=True` here is a confirmed,
-deliberate divergence from live, not just a documented one.
-Comparing our own r112-28 backtest (same window, `flat_at_session_end`
-overridden False to match) against the real trades: **the first 11 real
-trades match PERFECTLY** (entry price/time near-exact, 8/31 through
-2026-09-02 15:49 ET) **then EVERY subsequent real trade (9/3 through 9/11,
-31 trades) misses entirely.** This is not gradual drift or generic renko
-size-sensitivity (an earlier note here wrongly concluded r111-28 was the
-"real" live config at 95% match — WRONG, retracted: that was a
-coincidental compensating path through the state machine, not evidence of
-an off-by-one in the brick/trend-to-price conversion, which was checked
-and looks correct: `spec.brick_ticks * tick_size` / `spec.trend_ticks *
-tick_size` in `Catalog._bars_for_day`, feeding `build_renko_bars`
-straightforwardly, and MNQ's tick_size=0.25 is exactly representable in
-float64 so no accumulation drift is expected there either). This is a
-**single cascading divergence point**: renko is a state machine (each
-bar's anchor depends on the previous bar's close), so ONE bar forming
-differently from NT8 near the 9/2evening->9/3 boundary throws off every
-subsequent bar for the rest of the run, with no in-session mechanism to
-resync. Ordinary daily resets on either side of it (8/31->9/1, 9/1->9/2)
-matched fine, so the general gap-reset logic in `build_renko_bars` isn't
-obviously broken either — the divergence looks localized to something
-specific about that one boundary.
-**Root cause NOT YET FOUND.** This needs a genuine NT8 ninZaRenko bar/
-chart export (Brick=112, Reversal=28, MNQ, spanning at least
-2026-09-02 12:00 ET through 2026-09-03 10:00 ET) diffed bar-by-bar against
-`build_renko_bars` output — the same methodology already used to validate
-the five ninZaRenko settings in CLAUDE.md's ninZaRenko section (10/3, 36/2,
-40/10, 64/16, 100/4), none of which include 112/28. Until that's done,
-**do not trust this backtester's ninZaRenko output at r112-28 (or nearby
-untested sizes) as faithful to real NT8 bars** — the bar-size sweep and
-walk-forward above are still internally-consistent Python-vs-Python
-results, but their absolute numbers may not transfer to live trading if
-this bug is present at other sizes too, which is unknown.
+**RETRACTED 2026-09-16 (see below): an earlier version of this note
+claimed an "open bug" — a cascading renko divergence starting 2026-09-03 —
+based on a trade-timing-only comparison against a Market Replay executions
+export. A follow-up bar-level parity check against a real NT8
+`gbBarExporter` chart export (MNQ, ninZaRenko Brick=112/Reversal=28,
+2026-08-23..2026-09-16) found NO such bug: bars match NT8 almost
+perfectly (99%+ identical on 17 of 18 days), including the exact window
+(2026-09-02..09-03) the trade comparison had flagged — zero bar mismatches
+there. The one real anomaly is 2026-09-10, where NT8's first bar after
+midnight has body = exactly `trend` ticks (the signature of a FRESH reset:
+open=anchor, body=T), while our side — correctly carrying state from
+9/9's last close — built a continuation bar instead; our own recorded
+tick data shows no gap at that point, so this looks like a brief live-feed
+gap on NT8's own Market Replay session that night, not a bug in our
+reset-detection (verify with `carry_anchor`/`carry_dir` threaded via
+`Catalog._load_sequence_renko`'s scalar returns, NOT via a `BarDay`
+object's own `.end_anchor`/`.end_dir` fields — those are only valid on a
+freshly-built day; a cache-hit `BarDay` always has them at their dataclass
+defaults 0.0/0, which is what produced the original false alarm here).
+**Since the bars check out, the real (much narrower) open question is
+fill/exit mechanics** — the original trades-CSV comparison's `stop_offset_
+ticks=2` was a guess, never confirmed against the live run, and a wrong
+guess there would misalign exit timing and cascade through this
+single-position strategy's state machine without any bar-geometry fault
+at all. Nobody has yet re-run that trade comparison with bars now known
+to be correct plus a swept `stop_offset_ticks` to see if a match
+emerges — worth doing before trusting or distrusting r112-28 further.
 
 Signal (bar-direction state machine, no indicators): track the direction
 (sign of close-open) of the last nonzero-direction bar. When a bar's
