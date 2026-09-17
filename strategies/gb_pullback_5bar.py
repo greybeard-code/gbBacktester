@@ -90,6 +90,49 @@ but it has NOT had an NT8 chart-parity check on this specific renko size,
 nor a live/paper-trading trial, and the session-window improvements above
 are still unvalidated upside. Treat as a strong candidate, not a champion.**
 
+**OPEN BUG, found 2026-09-16, NOT YET ROOT-CAUSED: our ninZaRenko builder
+diverges from a real NT8 Market Replay at r112-28 partway through a
+multi-day run.** User ran gbPullback5Bar live in NT8 Market Replay
+(ninZaRenko Brick=112/Reversal=28, confirmed by the user — NOT a guess),
+MNQ 09-26, 2026-08-31..2026-09-11, exported the executions grid (42 round
+trips). Reconstructed round trips confirm `profit_target_ticks=50` exactly
+(35/36 profit-target exits at precisely 50 ticks) and that the live .cs
+does NOT flatten at session end (one trade rode 15:55->17:56 ET past the
+16:00 close) — so `flat_at_session_end=True` here is a confirmed,
+deliberate divergence from live, not just a documented one.
+Comparing our own r112-28 backtest (same window, `flat_at_session_end`
+overridden False to match) against the real trades: **the first 11 real
+trades match PERFECTLY** (entry price/time near-exact, 8/31 through
+2026-09-02 15:49 ET) **then EVERY subsequent real trade (9/3 through 9/11,
+31 trades) misses entirely.** This is not gradual drift or generic renko
+size-sensitivity (an earlier note here wrongly concluded r111-28 was the
+"real" live config at 95% match — WRONG, retracted: that was a
+coincidental compensating path through the state machine, not evidence of
+an off-by-one in the brick/trend-to-price conversion, which was checked
+and looks correct: `spec.brick_ticks * tick_size` / `spec.trend_ticks *
+tick_size` in `Catalog._bars_for_day`, feeding `build_renko_bars`
+straightforwardly, and MNQ's tick_size=0.25 is exactly representable in
+float64 so no accumulation drift is expected there either). This is a
+**single cascading divergence point**: renko is a state machine (each
+bar's anchor depends on the previous bar's close), so ONE bar forming
+differently from NT8 near the 9/2evening->9/3 boundary throws off every
+subsequent bar for the rest of the run, with no in-session mechanism to
+resync. Ordinary daily resets on either side of it (8/31->9/1, 9/1->9/2)
+matched fine, so the general gap-reset logic in `build_renko_bars` isn't
+obviously broken either — the divergence looks localized to something
+specific about that one boundary.
+**Root cause NOT YET FOUND.** This needs a genuine NT8 ninZaRenko bar/
+chart export (Brick=112, Reversal=28, MNQ, spanning at least
+2026-09-02 12:00 ET through 2026-09-03 10:00 ET) diffed bar-by-bar against
+`build_renko_bars` output — the same methodology already used to validate
+the five ninZaRenko settings in CLAUDE.md's ninZaRenko section (10/3, 36/2,
+40/10, 64/16, 100/4), none of which include 112/28. Until that's done,
+**do not trust this backtester's ninZaRenko output at r112-28 (or nearby
+untested sizes) as faithful to real NT8 bars** — the bar-size sweep and
+walk-forward above are still internally-consistent Python-vs-Python
+results, but their absolute numbers may not transfer to live trading if
+this bug is present at other sizes too, which is unknown.
+
 Signal (bar-direction state machine, no indicators): track the direction
 (sign of close-open) of the last nonzero-direction bar. When a bar's
 direction flips against that ("the pullback bar"), arm a pending trend in

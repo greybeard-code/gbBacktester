@@ -413,6 +413,38 @@ plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
   morning-only window) worth a follow-up walk-forward if pursued. Needs an
   NT8 chart-parity check on r112-28 and a paper-trading trial before any
   real size.
+- **OPEN BUG (2026-09-16, NOT ROOT-CAUSED): `build_renko_bars` diverges from
+  a real NT8 Market Replay partway through a multi-day ninZaRenko run.**
+  Found validating gbPullback5Bar above against a real NT8 Market Replay
+  executions export (user-confirmed live config: ninZaRenko Brick=112/
+  Reversal=28, MNQ 09-26, 2026-08-31..2026-09-11). Our own r112-28 backtest
+  over the same window matches the first 11 real trades PERFECTLY
+  (2026-08-31 through 2026-09-02 15:49 ET) then **misses every one of the
+  remaining 31 real trades**, with no partial degradation in between — a
+  single cascading divergence, not gradual drift, consistent with renko
+  being a state machine where one bar forming differently throws off every
+  bar after it (no in-session resync). The ordinary daily gap-resets on
+  either side of the break (8/31->9/1, 9/1->9/2) matched fine, so the
+  general reset logic isn't obviously at fault; the divergence looks
+  localized to something specific near the 9/2 evening -> 9/3 morning
+  boundary. Checked and ruled out: the ticks->price conversion at the
+  `build_renko_bars` call site (`spec.brick_ticks * tick_size` etc. in
+  `Catalog._bars_for_day`) looks correct, and MNQ's tick_size=0.25 is
+  exactly representable in float64 so no accumulation drift is expected.
+  An earlier hypothesis that r111-28 (1 tick smaller) was the "real" match
+  at 95% trade-timing parity is WRONG and retracted — that was a
+  coincidental compensating path through the state machine post-divergence,
+  not evidence of a systematic off-by-one in the brick/trend parameters.
+  **None of this repo's five previously-validated ninZaRenko settings
+  (10/3, 36/2, 40/10, 64/16, 100/4) include 112/28**, so this may be a gap
+  in size, not a general regression. Needs a real NT8 bar/chart export
+  (Brick=112, Reversal=28, MNQ, spanning 2026-09-02 12:00 ET through
+  2026-09-03 10:00 ET at minimum) diffed bar-by-bar against
+  `build_renko_bars` to actually find the divergent bar — do not guess
+  further without that ground truth. Until resolved, treat ninZaRenko
+  output at sizes outside the five validated ones (especially r112-28) as
+  UNVERIFIED against real NT8 bars, even though the Python-vs-Python sweep
+  numbers above are internally consistent.
 
 ## Conventions & gotchas
 
