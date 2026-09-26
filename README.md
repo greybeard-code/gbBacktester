@@ -1,9 +1,8 @@
 # backtester
 
-Tick-level futures backtester for NinjaTrader Market Replay data
-(Parquet, see `M:\NinjaTrader_DataRepo\RawData\Parquet\README.txt`).
-Built for fast iteration on intraday prop-firm strategies before porting
-them to NinjaTrader 8.
+Tick-level futures backtester for NinjaTrader Market Replay data converted
+to Parquet (see [Data](#data)). Built for fast iteration on intraday
+prop-firm strategies before porting them to NinjaTrader 8.
 
 ## New here?
 
@@ -15,8 +14,8 @@ them to NinjaTrader 8.
    full writeup of the validated GodZillaKilla confluence settings — you
    don't need to paste anything in for Claude to see it.
 3. Point your own tick data at it: set `BACKTESTER_DATA_ROOT` to wherever
-   your NinjaTrader Market Replay Parquet repo lives (same folder layout as
-   the path above), or ask Claude to help you get data in place.
+   your NinjaTrader Market Replay Parquet repo lives (layout in
+   [Data](#data)), or ask Claude to help you get data in place.
 
 A good first prompt to paste in:
 
@@ -41,6 +40,52 @@ trade distribution, full trade list).
 First touch of each day reduces the raw ~24M-event file to trade events with
 prevailing bid/ask attached and caches it under `.cache\` (plus per-period bar
 caches). First pass over a day costs a few seconds; cached runs are ~0.1 s/day.
+
+## Data
+
+The backtester reads NinjaTrader 8 Market Replay recordings converted to
+Parquet: one file per instrument per ET calendar day, from a **continuous**
+(roll-stitched) series.
+
+```
+<DATA_ROOT>/<YEAR>/<SYM>-<YEAR>_L1/<YYYYMMDD>.parquet
+<DATA_ROOT>/<SYM>-<YEAR>_L1/<YYYYMMDD>.parquet      (older flat layout, also read)
+```
+
+- **Schema (L1):** `Timestamp` (ns, UTC), `MarketDataType` (int8: 0 ask,
+  1 bid, 2 last/trade, …), `Price` (float64), `Volume` (int64). Only L1 is
+  needed; `_L2` depth folders alongside are ignored.
+- **`<YEAR>`** is the roll-season year. Quarterly index futures (ES, NQ, YM,
+  RTY and micros) move into next year's folder on the Monday before
+  December's 3rd Friday; everything else uses the calendar year.
+- **Producing it:** record or download days with NT8 Market Replay, then
+  convert the `.nrd` files with `nrd_to_parquet.py` from
+  [gbNRDtoCSV](https://github.com/greybeard-code/gbNRDtoCSV). It writes
+  this layout directly.
+- **Pointing at it:** set `BACKTESTER_DATA_ROOT` to `<DATA_ROOT>` (the
+  default is a Windows `M:\NinjaTrader_DataRepo\RawData\Parquet`; `cli.py`
+  also takes `--data-root`). A network share works fine, and read-only is
+  enough: the backtester only writes to its cache, `.cache/` by default
+  (`BACKTESTER_CACHE` to move it).
+
+### Check the data before trusting a backtest
+
+A continuous series is only as good as its roll choice. If a day was
+converted from the expiring contract after volume moved to the next one, the
+file looks normal but has almost no trades. The backtest won't error; it just
+sees near-empty bars on those days, most often right around contract rolls.
+The same failure appears when a series' roll logic is later corrected but
+days already converted to Parquet aren't rebuilt.
+
+`audit_repo.py` in gbNRDtoCSV checks a whole repo from file headers and
+Parquet footers only, without decoding anything. For each day it reports:
+
+- which contract the continuous file really is, and whether that contract
+  was the day's volume leader
+- thin days (few trades for that symbol)
+- Parquet days that don't match their source file, and missing days
+
+Run it after each data update, and re-convert anything it flags.
 
 ## Writing a strategy
 

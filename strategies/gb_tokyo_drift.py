@@ -101,18 +101,11 @@ OOS segment (a fresh Backtest) isn't blocked by a 40-session warmup; only
 sessions that ended before the run's first bar are read (checked: live
 session ranges match the table exactly).
 
-**CACHE-ROOT CAVEAT**: this repo's raw M:\\ data root isn't mounted on the Linux
-box this was built on; a `.stub_raw/` directory of empty placeholder files
-(matching the `<SYM>-<YEAR>_L1/YYYYMMDD.parquet` naming `Catalog.day_files` scans
-for) stands in for it so `Catalog.days()` can enumerate dates — `load_day()`
-always hits the real reduced-cache parquet first and never actually reads the
-stub's (empty) bytes. This works ONLY while every requested date is a cache hit;
-a genuinely uncached date (a new symbol, a `CACHE_VERSION`/`BARS_VERSION` bump,
-a date outside what's cached) will read the 0-byte stub and fail with a
-confusing pyarrow error rather than a clear "no data" message. Point
-`BACKTESTER_DATA_ROOT` at a real raw repo (or regenerate the stub for the new
-date range) before trusting a result outside the currently-cached MGC window
-(2025-01-01..2026-08-07 as of this writing).
+**DATA**: every result above predates a repo fix. MGC days around the Aug 2026
+roll (2026-07-29..08-18) had been converted from the expiring 08-26 contract,
+so they held almost no trades. That window is the end of the "recent losing"
+stretch, so re-run after the repo and `.cache/` are rebuilt for those dates
+(see CLAUDE.md "Data").
 """
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo

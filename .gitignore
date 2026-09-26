@@ -5,9 +5,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .claude/
-# Local-only stand-in for the M:\ raw data root on machines without it mounted
-# (empty placeholder files so Catalog.day_files() can enumerate cached dates;
-# see gb_tokyo_drift.py's own docstring for why this is safe and its limits).
+# Obsolete local stand-in for the raw data root (raw data is read in place from
+# Overseer now, see CLAUDE.md "Data"). Still ignored in case an old copy exists.
 .stub_raw/
 
 # Vendor binaries are NEVER committed — this repository is PUBLIC, and the NT8

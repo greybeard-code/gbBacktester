@@ -10,7 +10,7 @@ Each row also shows the 2025 / 2026 split (does the bucket's edge hold in both
 halves, or is it one year?) and net with its best 5 trades removed (is it a
 handful of outliers?).
 
-Usage (repo root): BACKTESTER_DATA_ROOT=.stub_raw python3 -m tools.tokyodrift_regime [buffer R]
+Usage (repo root): python3 -m tools.tokyodrift_regime [buffer R]
 """
 import sys
 from datetime import datetime

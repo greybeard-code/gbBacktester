@@ -9,7 +9,7 @@ direction + level name), NOT P&L — this port resolves fills on real ticks,
 the .cs's Strategy Analyzer run resolves them on bar-close approximations, so
 a P&L difference is expected and not a bug.
 
-Usage: BACKTESTER_DATA_ROOT=.../.stub_raw python3 tools/compare_tokyodrift.py
+Usage (repo root): python3 -m tools.compare_tokyodrift
 """
 from datetime import datetime
 

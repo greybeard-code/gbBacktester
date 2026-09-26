@@ -14,9 +14,25 @@ pythonic, NOT NT8-mimicking — the port is a translation step, by design.
 .venv\Scripts\python tools\compare_nt8.py reports\X_trades.csv nt8_export.csv
 ```
 
-Env: `BACKTESTER_DATA_ROOT` (default M:\ repo), `BACKTESTER_CACHE`
-(default `.cache\` here). Venv is `.venv` (Python 3.14; numpy, pyarrow,
-plotly, tzdata, pytest — no pandas/polars, keep it that way unless needed).
+Env: `BACKTESTER_DATA_ROOT`, `BACKTESTER_CACHE` (default `.cache\` here).
+Venv is `.venv` (Python 3.14; numpy, pyarrow, plotly, tzdata, pytest — no
+pandas/polars, keep it that way unless needed).
+
+## Data
+
+Layout, schema and setup are in README.md "Data". Machine-specific details
+(where the repo lives, how it's mounted) belong in the user's own global
+notes, not in this public repo. Read those if `BACKTESTER_DATA_ROOT` is unset
+or `Catalog` can't find the data root.
+- **Read the repo in place; never copy raw days locally.** The only local
+  data is `.cache/` (derived, rebuildable). Read-only access is enough.
+- **Suspect the data before the strategy near contract rolls.** A day
+  converted from the expiring contract (wrong roll choice, or Parquet not
+  rebuilt after the roll logic changed) looks normal but has almost no trades,
+  so bars come out near-empty with no error. Check with gbNRDtoCSV's
+  `audit_repo.py` (headers only, fast). A bar cache built from a bad day stays
+  bad after the repo is fixed: delete that date's `.cache/reduced/<SYM>/` and
+  `.cache/bars/<SYM>/*/` files so it rebuilds.
 
 ## Architecture (read this before touching the engine)
 
