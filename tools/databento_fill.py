@@ -17,6 +17,11 @@ which depends on pandas (CLAUDE.md keeps pandas out of this venv).
     python tools/databento_fill.py --cost            # price it, download nothing
     python tools/databento_fill.py --fetch           # download and write
     python tools/databento_fill.py --cost --include-cl
+
+Days whose recording EXISTS but is unusable (malformed / fails the decoder's
+integrity check) are not gaps to the scan above; name them explicitly:
+
+    python tools/databento_fill.py --cost --days 20260811 --symbols ES,MES
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ API = "https://hist.databento.com/v0"
 DATASET = "GLBX.MDP3"
 SCHEMA = "tbbo"
 
+# Defaults; override with --parquet-root / --continuous-root.
 NRD_ROOT = Path(r"M:\NinjaTrader_DataRepo\RawData\Continuous")
 PARQUET_ROOT = Path(r"M:\NinjaTrader_DataRepo\RawData\Parquet")
 
@@ -57,26 +63,20 @@ MONTH_CODE = "FGHJKMNQUVXZ"          # Jan..Dec
 # they are never fetch candidates even though the audit reports them missing.
 MARKET_CLOSED = {"20250418"}          # Good Friday 2025
 
-# Explicit front-month overrides for days where the repo's roll rule diverges
-# from where the volume actually was. COMEX gold's first notice day is the last
-# business day of the month BEFORE delivery, so liquidity leaves the June
-# contract in late May -- but Build-ContinuousContracts.ps1 rolls metals on the
-# 1st of the expiry month, holding the dying contract ~3 trading days too long.
-# Confirmed via metadata.get_cost on 2026-07-26: MGCM5 collapsed to $0.0002 on
-# 2025-05-30 while MGCQ5 still billed $0.2175 (full-size GC shows the same).
-# Fetching M5 here would write near-empty files that look present -- worse than
-# leaving the day missing. Same reasoning applies to every GC/MGC roll.
-CONTRACT_OVERRIDE = {
-    ("MGC", "20250528"): "MGCQ5",
-    ("MGC", "20250529"): "MGCQ5",
-    ("MGC", "20250530"): "MGCQ5",
-}
+# Explicit front-month overrides for days where the roll rule below diverges
+# from where the volume actually was. Empty since 2026-09-26: the gold rule now
+# rolls 3 business days before the 1st of the expiry month (liquidity leaves
+# before first notice day), which covers the MGC 2025-05-28..30 days that
+# needed overrides under the old 1st-of-month rule (MGCM5 had collapsed to
+# $0.0002 of data on 2025-05-30 while MGCQ5 billed $0.2175).
+CONTRACT_OVERRIDE: dict[tuple[str, str], str] = {}
 
 
 # --------------------------------------------------------------------------
-# contract roll -- mirrors Get-ActiveContractForDate in
-# M:\NinjaTrader_DataRepo\Scripts\Audit-ContinuousContracts.ps1 so the fetched
+# contract roll -- mirrors Get-RollDate in Build-ContinuousContracts.ps1 (and
+# Get-ActiveContractForDate in Audit-ContinuousContracts.ps1) so the fetched
 # day comes from the same contract the rest of the continuous series uses.
+# Gold lists Feb/Apr/Jun/Aug/Dec only in the continuous series (no October).
 # --------------------------------------------------------------------------
 
 def third_friday(year: int, month: int) -> date:
@@ -101,7 +101,7 @@ def active_contract(symbol: str, d: date) -> tuple[int, int]:
     if symbol in QUARTERLY:
         months, rule = (3, 6, 9, 12), "quarterly"
     elif symbol in METALS:
-        months, rule = (2, 4, 6, 8, 10, 12), "monthly1st"
+        months, rule = (2, 4, 6, 8, 12), "gold"
     else:                                   # CL/MCL and anything else
         months, rule = tuple(range(1, 13)), "crudeoil"
 
@@ -112,7 +112,9 @@ def active_contract(symbol: str, d: date) -> tuple[int, int]:
                 roll = third_friday(y, m) - timedelta(days=4)
             elif rule == "crudeoil":
                 pm, py = (12, y - 1) if m == 1 else (m - 1, y)
-                roll = nth_business_day_before(date(py, pm, 25), 3)
+                roll = nth_business_day_before(date(py, pm, 25), 6)
+            elif rule == "gold":
+                roll = nth_business_day_before(date(y, m, 1), 3)
             else:
                 roll = date(y, m, 1)
             cands.append((y, m, roll))
@@ -280,13 +282,25 @@ def to_l1_table(rows: list[dict]) -> pa.Table:
     })
 
 
-def out_path(symbol: str, day: str, year: int) -> Path:
-    return PARQUET_ROOT / str(year) / f"{symbol}-{year}_L1" / f"{day}.parquet"
+def season_year(symbol: str, day: str) -> int:
+    """Roll-season year folder (matches nrd_to_parquet.season_year): quarterly
+    index futures move to next year's folder on the Monday before December's
+    3rd Friday; everything else uses the calendar year."""
+    d = datetime.strptime(day, "%Y%m%d").date()
+    if symbol in QUARTERLY and d >= third_friday(d.year, 12) - timedelta(days=4):
+        return d.year + 1
+    return d.year
+
+
+def out_path(symbol: str, day: str) -> Path:
+    y = season_year(symbol, day)
+    return PARQUET_ROOT / str(y) / f"{symbol}-{y}_L1" / f"{day}.parquet"
 
 
 # --------------------------------------------------------------------------
 
 def main() -> int:
+    global PARQUET_ROOT, NRD_ROOT
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--year", type=int, default=2025)
@@ -297,7 +311,16 @@ def main() -> int:
     mode.add_argument("--cost", action="store_true", help="price it, download nothing")
     mode.add_argument("--fetch", action="store_true", help="download and write Parquet")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--days", help="comma list of YYYYMMDD to fill regardless of the "
+                                   "gap scan (e.g. days whose recording is malformed)")
+    ap.add_argument("--parquet-root", help=f"default {PARQUET_ROOT}")
+    ap.add_argument("--continuous-root", help=f"default {NRD_ROOT}")
     args = ap.parse_args()
+
+    if args.parquet_root:
+        PARQUET_ROOT = Path(args.parquet_root)
+    if args.continuous_root:
+        NRD_ROOT = Path(args.continuous_root)
 
     key = os.environ.get("DATABENTO_API_KEY")
     if not key:
@@ -306,7 +329,11 @@ def main() -> int:
 
     syms = ([s.strip().upper() for s in args.symbols.split(",")]
             if args.symbols else None)
-    gaps = find_gaps(args.year, syms)
+    if args.days:
+        days = [d.strip() for d in args.days.split(",")]
+        gaps = {s: list(days) for s in (syms or sorted(MAINTAINED))}
+    else:
+        gaps = find_gaps(args.year, syms)
     if not syms:
         allow = MAINTAINED | ({"CL", "MCL"} if args.include_cl else set())
         gaps = {s: v for s, v in gaps.items() if s in allow}
@@ -337,7 +364,7 @@ def main() -> int:
     written = 0
     for sym in sorted(gaps):
         for day in gaps[sym]:
-            dst = out_path(sym, day, args.year)
+            dst = out_path(sym, day)
             if dst.exists() and not args.overwrite:
                 print(f"  {sym} {day}  exists, skipping")
                 continue
