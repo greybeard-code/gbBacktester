@@ -22,6 +22,15 @@ Days whose recording EXISTS but is unusable (malformed / fails the decoder's
 integrity check) are not gaps to the scan above; name them explicitly:
 
     python tools/databento_fill.py --cost --days 20260811 --symbols ES,MES
+
+A recording that simply STOPS early (e.g. 2026-08-10 ends 21:54 ET) can keep
+its NT8 data and get only the missing tail from Databento: --splice-tail reads
+the existing L1 file, fetches from its last event to ET midnight, and appends
+the events after that timestamp. The original is copied to
+<repo>/hold/parquet-replaced-<date>/ first; the result keeps its NT8 metadata
+and gains splice.* keys recording where the Databento tail starts.
+
+    python tools/databento_fill.py --cost --splice-tail --days 20260810 --symbols MGC
 """
 from __future__ import annotations
 
@@ -31,6 +40,7 @@ import csv
 import io
 import json
 import os
+import shutil
 import sys
 import urllib.parse
 import urllib.request
@@ -197,20 +207,24 @@ def _request(method: str, endpoint: str, key: str, params: dict) -> bytes:
         return r.read()
 
 
-def day_window(day: str) -> tuple[str, str]:
+def day_window(day: str, after_ns: int | None = None) -> tuple[str, str]:
     """ET calendar day -> [start, end) as UTC ISO strings.
 
     Repo day files are ET calendar days (see CLAUDE.md), so the fetch window
-    must be the ET midnight-to-midnight span expressed in UTC.
+    must be the ET midnight-to-midnight span expressed in UTC. With after_ns
+    the window starts at that instant instead (floored to the second; the
+    caller filters to events strictly after it).
     """
     d = datetime.strptime(day, "%Y%m%d").replace(tzinfo=EASTERN)
     lo = d.astimezone(ZoneInfo("UTC"))
+    if after_ns is not None:
+        lo = datetime.fromtimestamp(after_ns // 1_000_000_000, ZoneInfo("UTC"))
     hi = (d + timedelta(days=1)).astimezone(ZoneInfo("UTC"))
     return lo.strftime("%Y-%m-%dT%H:%M:%S"), hi.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def get_cost(key: str, symbol: str, day: str) -> float:
-    lo, hi = day_window(day)
+def get_cost(key: str, symbol: str, day: str, after_ns: int | None = None) -> float:
+    lo, hi = day_window(day, after_ns)
     raw = _request("GET", "metadata.get_cost", key, {
         "dataset": DATASET, "symbols": raw_symbol(
             symbol, datetime.strptime(day, "%Y%m%d").date()),
@@ -220,8 +234,9 @@ def get_cost(key: str, symbol: str, day: str) -> float:
     return float(json.loads(raw))
 
 
-def fetch_tbbo(key: str, symbol: str, day: str) -> list[dict]:
-    lo, hi = day_window(day)
+def fetch_tbbo(key: str, symbol: str, day: str,
+               after_ns: int | None = None) -> list[dict]:
+    lo, hi = day_window(day, after_ns)
     raw = _request("POST", "timeseries.get_range", key, {
         "dataset": DATASET, "symbols": raw_symbol(
             symbol, datetime.strptime(day, "%Y%m%d").date()),
@@ -297,6 +312,81 @@ def out_path(symbol: str, day: str) -> Path:
     return PARQUET_ROOT / str(y) / f"{symbol}-{y}_L1" / f"{day}.parquet"
 
 
+def splice_tail(existing: pa.Table, rows: list[dict], after_ns: int) -> tuple[pa.Table, int]:
+    """Append the TBBO events strictly after `after_ns` to an existing NT8 L1
+    table. Returns (new table, number of trades appended). Existing metadata is
+    kept (NT8 provenance) and splice.* keys are added."""
+    tail_rows = [r for r in rows if int(r["ts_recv"]) > after_ns]
+    if not tail_rows:
+        return existing, 0
+    tail = to_l1_table(tail_rows).select(existing.column_names).cast(existing.schema)
+    merged = pa.concat_tables([existing.replace_schema_metadata(None),
+                               tail.replace_schema_metadata(None)])
+    meta = dict(existing.schema.metadata or {})
+    meta.update({
+        b"splice.source": b"databento GLBX.MDP3 tbbo",
+        b"splice.after_ns": str(after_ns).encode(),
+        b"splice.trades": str(len(tail_rows)).encode(),
+    })
+    return merged.replace_schema_metadata(meta), len(tail_rows)
+
+
+def backup(path: Path) -> Path:
+    hold = PARQUET_ROOT.parent.parent / "hold" / f"parquet-replaced-{date.today():%Y%m%d}"
+    dest = hold / path.parent.name / path.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    n = 1
+    while dest.exists():
+        dest = dest.with_name(f"{path.stem}.{n}{path.suffix}")
+        n += 1
+    shutil.copy2(path, dest)
+    return dest
+
+
+def run_splice(args, key: str, gaps: dict[str, list[str]]) -> int:
+    grand, written = 0.0, 0
+    for sym in sorted(gaps):
+        for day in gaps[sym]:
+            dst = out_path(sym, day)
+            if not dst.exists():
+                print(f"  {sym} {day}  no existing file to splice into; use a full fill")
+                continue
+            existing = pq.read_table(dst)
+            if (existing.schema.metadata or {}).get(b"splice.source") and not args.overwrite:
+                print(f"  {sym} {day}  already spliced, skipping")
+                continue
+            ts = existing["Timestamp"].cast(pa.int64()).to_numpy()
+            after_ns = int(ts.max())
+            end = datetime.strptime(day, "%Y%m%d").replace(tzinfo=EASTERN) + timedelta(days=1)
+            after_et = datetime.fromtimestamp(after_ns / 1e9, EASTERN)
+            if (end - after_et).total_seconds() < 120:
+                print(f"  {sym} {day}  already runs to {after_et:%H:%M:%S} ET; nothing to fill")
+                continue
+            d = datetime.strptime(day, "%Y%m%d").date()
+            if args.cost:
+                c = get_cost(key, sym, day, after_ns)
+                grand += c
+                print(f"  {sym:<4} {day}  {raw_symbol(sym, d):<6} tail from {after_et:%H:%M:%S} ET  ${c:>8.4f}")
+                continue
+            rows = fetch_tbbo(key, sym, day, after_ns)
+            merged, n = splice_tail(existing, rows, after_ns)
+            if not n:
+                print(f"  {sym} {day}  no trades after {after_et:%H:%M:%S} ET")
+                continue
+            bak = backup(dst)
+            tmp = dst.with_suffix(f".{os.getpid()}.tmp")
+            pq.write_table(merged, tmp, compression="zstd")
+            os.replace(tmp, dst)
+            written += 1
+            print(f"  {sym} {day}  +{n:,} trades after {after_et:%H:%M:%S} ET "
+                  f"({existing.num_rows:,} -> {merged.num_rows:,} L1 events); original -> {bak}")
+    if args.cost:
+        print(f"TOTAL ESTIMATE: ${grand:.2f}  (schema={SCHEMA}). No data downloaded.")
+    else:
+        print(f"\nSpliced {written} day files.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 
 def main() -> int:
@@ -313,6 +403,8 @@ def main() -> int:
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--days", help="comma list of YYYYMMDD to fill regardless of the "
                                    "gap scan (e.g. days whose recording is malformed)")
+    ap.add_argument("--splice-tail", action="store_true",
+                    help="append only the missing tail of an existing file (needs --days)")
     ap.add_argument("--parquet-root", help=f"default {PARQUET_ROOT}")
     ap.add_argument("--continuous-root", help=f"default {NRD_ROOT}")
     args = ap.parse_args()
@@ -341,6 +433,12 @@ def main() -> int:
     if not gaps:
         print("No fillable gaps found.")
         return 0
+
+    if args.splice_tail:
+        if not args.days:
+            print("--splice-tail needs --days", file=sys.stderr)
+            return 2
+        return run_splice(args, key, gaps)
 
     total_days = sum(len(v) for v in gaps.values())
     print(f"Fillable gaps: {total_days} day-fetches across {len(gaps)} symbols\n")
