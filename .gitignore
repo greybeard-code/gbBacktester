@@ -5,8 +5,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .claude/
-# Obsolete local stand-in for the raw data root (raw data is read in place from
-# Overseer now, see CLAUDE.md "Data"). Still ignored in case an old copy exists.
+# Obsolete local stand-in for the raw data root (raw data is read in place via
+# BACKTESTER_DATA_ROOT now, see README "Data"). Still ignored in case an old copy exists.
 .stub_raw/
 
 # Vendor binaries are NEVER committed — this repository is PUBLIC, and the NT8
