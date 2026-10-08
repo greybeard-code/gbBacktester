@@ -1,6 +1,6 @@
 """gbPANAKanal port — Keltner-style channel with break & pullback signals.
 
-Source: nt8 code/GodZillaKilla/indicators/gbPANAKanal.cs (v1.1.1),
+Source: the NinjaScript indicator gbPANAKanal (v1.1.1),
 OnBarClose semantics (OnBarUpdate lines 737-1041, CheckBreakoutAndPullback-
 Signal 1075-1221, GetStateKeltner 1526-1542, ComputeKeltner 1342-1347).
 

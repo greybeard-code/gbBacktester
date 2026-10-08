@@ -1,6 +1,6 @@
 """gbKingOrderBlock port — smart-money order blocks (swings/BOS-CHoCH/FVG).
 
-Source: nt8 code/GodZillaKilla/indicators/gbKingOrderBlock.cs (OnBarUpdate
+Source: the NinjaScript indicator gbKingOrderBlock (OnBarUpdate
 1559-1599, swing finders 2246-2422, BOS/CHoCH 2424-2514, imbalance 1888-1998,
 order blocks 2000-2152, IsReversalBar 2957-2968), OnBarClose semantics.
 

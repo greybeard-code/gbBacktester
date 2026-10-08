@@ -106,8 +106,7 @@ class Strategy:
     # > 0 makes strategy-initiated exits (close_position / reversals) wait
     # until the position is this old; hard bracket stops and session/DLL
     # flattens are NOT gated. 0 = off (no such rule confirmed for the
-    # Intraday Trailing Drawdown accounts this repo currently targets —
-    # see CLAUDE.md).
+    # Intraday Trailing Drawdown accounts this repo currently targets).
     min_hold_s: float = 0.0
     # Extra bar series for multi-timeframe logic, e.g. ["5m", "15m"]. Each is
     # a period string (same grammar as `period`). During on_bar, read the
@@ -365,16 +364,14 @@ def parse_barspec(period: str) -> BarSpec:
     (brick 8 ticks, trend threshold 4; 'r8' defaults trend to brick/2);
     's64-16'/'s64-16-2' SaberRenko (Bar Size 64, Offset 16, Time Filter
     seconds, default 1); 'tb120' TBars ("Speed Settings" N=120); 'w120' Wave
-    Bars ("Wave Size" N=120). See research/SaberRenko_spec.md,
-    research/TBars_spec.md and `nt8 code/HiLoRider/WaveBars/WaveBars.md`."""
+    Bars ("Wave Size" N=120)."""
     p = period.strip().lower()
     m = re.fullmatch(r"w(\d+)", p)
     if m:
         wave = int(m.group(1))
         if wave < 1:
             raise ValueError(
-                f"Wave size ({wave}) must be >= 1 — see "
-                "`nt8 code/HiLoRider/WaveBars/WaveBars.md` §2")
+                f"Wave size ({wave}) must be >= 1")
         return BarSpec("wave", wave_ticks=wave)
     m = re.fullmatch(r"tb(\d+)", p)
     if m:
@@ -384,7 +381,7 @@ def parse_barspec(period: str) -> BarSpec:
                 f"TBars speed ({speed}) must be >= 2 — the trend offset is "
                 "N//2 ticks, so N=1 gives a zero-tick trend threshold and a "
                 "new bar on every uptick; NT8's TBarsNEW pins its own default "
-                "to 2 for the same reason (research/TBars_spec.md §1)")
+                "to 2 for the same reason")
         return BarSpec("tbars", speed_ticks=speed)
     m = re.fullmatch(r"s(\d+)-(\d+)(?:-(\d+))?", p)
     if m:
@@ -395,12 +392,12 @@ def parse_barspec(period: str) -> BarSpec:
             raise ValueError(
                 f"SaberRenko offset ({offset}) must not exceed bar size "
                 f"({bar}) — an offset larger than the bar degenerates "
-                "(near-every-tick bars); see research/SaberRenko_spec.md §1")
+                "(near-every-tick bars)")
         if bar % offset != 0:
             raise ValueError(
                 f"SaberRenko bar size ({bar}) must be a multiple of offset "
                 f"({offset}) to keep closes on the renko grid — e.g. "
-                "s64-16, s100-25; see research/SaberRenko_spec.md §3.4")
+                "s64-16, s100-25")
         return BarSpec("saber", bar_ticks=bar, offset_ticks=offset,
                        filter_s=max(1, filt))
     m = re.fullmatch(r"r(\d+)(?:-(\d+))?", p)

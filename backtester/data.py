@@ -367,7 +367,7 @@ class Catalog:
         resets ONLY on a genuine gap (> RENKO_RESET_GAP_NS) between the last
         tick of one day and the first tick of the next — the same rule
         already used for gaps *within* a single day file. SaberRenko has the
-        identical hazard (see research/SaberRenko_spec.md §5.3) and reuses
+        identical hazard and reuses
         the same threshold, since it coincides with the real CME halt for
         this repo's data.
 
@@ -764,8 +764,8 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
 
 
 # NT8 MathExtentions.ApproxCompare epsilon (SaberRenko's trigger comparisons
-# are ApproxCompare-based, confirmed from the compiled bar type — see
-# research/SaberRenko_spec.md §2). Mirrors gbsignals/nt8math.APPROX_EPS;
+# are ApproxCompare-based, confirmed from the compiled bar type).
+# Mirrors gbsignals/nt8math.APPROX_EPS;
 # duplicated locally rather than imported so this foundational data module
 # does not depend on the higher-level gbsignals signal-port package.
 _SABER_EPS = 1e-10
@@ -774,9 +774,8 @@ _SABER_EPS = 1e-10
 def build_saber_bars(day: DayL1, bar_ticks: int, offset_ticks: int,
                      tick_size: float, filter_ns: int,
                      carry: tuple | None = None) -> BarDay:
-    """SaberRenko bars — see research/SaberRenko_spec.md (reverse-engineered
-    from the compiled NinjaTrader.NinjaScript.BarsTypes.SaberRenko; no
-    decompiled source is kept in this repo).
+    """SaberRenko bars, re-implemented from the bar type's observed behaviour
+    (compiled bar type measured via chart exports; no vendor source used).
 
     Parameters:
     - `bar_ticks` **B** — trigger distance from the bar's anchor, ticks,
@@ -819,8 +818,7 @@ def build_saber_bars(day: DayL1, bar_ticks: int, offset_ticks: int,
     cannot see them; the three volume fields are what that bar has already
     accumulated on earlier days, added when it finally completes (without them
     a bar spanning a day-file boundary silently loses its pre-boundary volume
-    — measured at 0.6% of traded volume over 10 MNQ days, research/
-    TBars_spec.md §9). `None` starts fresh, zero carried volume: a doji seed
+    — measured at 0.6% of traded volume over 10 MNQ days). `None` starts fresh, zero carried volume: a doji seed
     at this day's first
     trade (this repo's day files are ET calendar days; day-file boundaries
     within one CME trading day, e.g. an 18:00-16:55 ET overnight session,
@@ -982,7 +980,7 @@ _TBARS_EPS = 1e-10
 def build_tbar_bars(day: DayL1, speed_ticks: int, tick_size: float,
                     carry: tuple | None = None,
                     reset_carries_dir: bool = False) -> BarDay:
-    """TBars — see research/TBars_spec.md.
+    """TBars.
 
     Ported from `NinjaTrader.NinjaScript.BarsTypes.TBars` as shipped in
     TBarsNEW.dll (the build actually installed here, custom BarsPeriodType
@@ -1074,7 +1072,7 @@ def build_tbar_bars(day: DayL1, speed_ticks: int, tick_size: float,
 
 def build_wave_bars(day: DayL1, wave_ticks: int, tick_size: float,
                     carry: tuple | None = None) -> BarDay:
-    """Wave Bars — see `nt8 code/HiLoRider/WaveBars/WaveBars.md`.
+    """Wave Bars.
 
     Ported from `NinjaTrader.NinjaScript.BarsTypes.WaveBarsType` (FlowMatriX,
     custom BarsPeriodType id 77077). Unlike ninZaRenko/SaberRenko/TBars this
@@ -1101,8 +1099,7 @@ def build_wave_bars(day: DayL1, wave_ticks: int, tick_size: float,
 
     1. **Volume is not double-counted.** TBars passes the completing tick's
        volume to BOTH `UpdateBar` and `AddBar`, so NT8's bar volumes exceed
-       traded volume (measured: +2,292 contracts over one MNQ window,
-       research/TBars_spec.md §8.1) and `build_tbar_bars` has to diverge
+       traded volume (measured: +2,292 contracts over one MNQ window) and `build_tbar_bars` has to diverge
        deliberately. Wave Bars passes **0** to `UpdateBar` and the real volume
        to `AddBar` — the breakout tick belongs to the NEW bar only, which is
        exactly this repo's non-overlapping `[i0, i1)` convention. So here the
@@ -1114,7 +1111,7 @@ def build_wave_bars(day: DayL1, wave_ticks: int, tick_size: float,
        which inverts (`bar_max < bar_min`) whenever the prior direction was
        down and emits a bar whose open sits above its own high — hence
        `build_tbar_bars`'s `reset_carries_dir=False` default and the whole
-       `NinjaScript/gbTBars/` fix. Fixed at source here, so there is no
+       gbTBars fix. Fixed at source here, so there is no
        `reset_carries_dir` parameter to offer. Two real consequences: there is
        **no seed doji stub** (TBars' seed collapses `bar_max == bar_min ==
        open`; this one opens a `2 * trend`-wide band, so the first bar after a
@@ -1162,7 +1159,7 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
 
     - `False` (TBars) — seed `open +/- trend * bar_dir`, i.e. collapsed at a
       fresh start (`bar_dir` 0) and INVERTED after a down run when
-      `reset_carries_dir=True`. See research/TBars_spec.md §5.2.
+      `reset_carries_dir=True`.
     - `True` (Wave) — seed `open +/- trend`, always a valid band.
       `reset_carries_dir` is ignored.
     """

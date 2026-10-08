@@ -1,6 +1,6 @@
 """gbSumoPullback port — multi-MA fair-value pullback signals.
 
-Source: nt8 code/GodZillaKilla/indicators/gbSumoPullback.cs (OnBarUpdate
+Source: the NinjaScript indicator gbSumoPullback (OnBarUpdate
 668-767). Signal_Trade codes: +1 bullish sumo / -1 bearish sumo.
 
 A signal fires when a counter-then-with-trend candle pair straddles the whole

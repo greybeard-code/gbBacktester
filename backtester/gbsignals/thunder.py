@@ -1,7 +1,7 @@
 """gbThunderZilla port — trend-strength state machine with pullback,
 move-stop and OBOS-slowdown signals.
 
-Source: nt8 code/GodZillaKilla/indicators/gbThunderZilla.cs (OnBarUpdate
+Source: the NinjaScript indicator gbThunderZilla (OnBarUpdate
 962-1265, ComputeSolarWindRK 1267-1347, ComputeSumoPullback 1349-1442,
 ComputeMultiOscOBOSOverlap 1444-1501), OnBarClose semantics.
 

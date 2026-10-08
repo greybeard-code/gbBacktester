@@ -75,7 +75,7 @@ def compute(result) -> dict:
     # trade durations — fast-hit visibility. No confirmed prop-firm rule
     # ties to a specific duration (the earlier "30s minimum hold" figure
     # doesn't appear in the Intraday Trailing Drawdown PA/Eval rules, the
-    # account type actually used here — see CLAUDE.md); this is now just a
+    # account type actually used here); this is now just a
     # diagnostic flag so a new strategy's reliance on very-fast hits is
     # visible at a glance.
     if trades:

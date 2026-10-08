@@ -11,7 +11,7 @@ discards standalone quote updates and retains only the quote prevailing at
 each trade -- so TBBO is lossless for this engine and far cheaper than mbp-1.
 
 Uses the plain HTTP API via stdlib urllib rather than the `databento` package,
-which depends on pandas (CLAUDE.md keeps pandas out of this venv).
+which depends on pandas (this project deliberately avoids a pandas dependency).
 
     set DATABENTO_API_KEY=db-...
     python tools/databento_fill.py --cost            # price it, download nothing
@@ -260,7 +260,7 @@ def _request(method: str, endpoint: str, key: str, params: dict) -> bytes:
 def day_window(day: str, after_ns: int | None = None) -> tuple[str, str]:
     """ET calendar day -> [start, end) as UTC ISO strings.
 
-    Repo day files are ET calendar days (see CLAUDE.md), so the fetch window
+    Repo day files are ET calendar days, so the fetch window
     must be the ET midnight-to-midnight span expressed in UTC. With after_ns
     the window starts at that instant instead (floored to the second; the
     caller filters to events strictly after it).

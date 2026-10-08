@@ -1,6 +1,6 @@
 """gbNobleCloud port — baseline vs kernel-band cloud with reversal signals.
 
-Source: nt8 code/GodZillaKilla/indicators/gbNobleCloud.cs (OnBarUpdate
+Source: the NinjaScript indicator gbNobleCloud (OnBarUpdate
 416-527). Signal_Trade codes: +1 bullish / -1 bearish.
 
 Cloud state: baseline (smoothed slow MA) vs a band around the kernel MA

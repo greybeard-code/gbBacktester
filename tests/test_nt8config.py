@@ -58,8 +58,7 @@ def test_exit_split_drops_empty_brackets():
 def test_strategy_template_saber_bar_spec(tmp_path):
     """SaberRenko's registered type id (20821) maps Value=bar size,
     BaseBarsPeriodValue=offset, Value2=time filter seconds — a different
-    Value2 meaning than ninZaRenko's trend threshold (see
-    research/SaberRenko_spec.md §7 Phase 4)."""
+    Value2 meaning than ninZaRenko's trend threshold."""
     p = tmp_path / "saber.xml"
     p.write_text(
         "<StrategyTemplate><StrategyType>X.Y.Z</StrategyType>"

@@ -1,6 +1,6 @@
 """TBars bar geometry, Heikin-Ashi output, cache, and cross-day carry.
 
-Port spec: research/TBars_spec.md. All hand-computed cases here use
+Port of the TBars bar type. All hand-computed cases here use
 speed_ticks=4 with tick 0.25, so the three derived distances are small round
 numbers:
 
@@ -40,7 +40,7 @@ def _day(ts_s, prices, volumes=None, tick=TICK):
 
 def _ha(o, h, l, c):
     """HA close, tick-rounded the way NT8 stores it (banker's, per the
-    2026-08-04 chart-export parity run — see research/TBars_spec.md §8)."""
+    2026-08-04 chart-export parity run)."""
     return float(np.round((o + h + l + c) * 0.25 / TICK) * TICK)
 
 
@@ -200,7 +200,7 @@ def test_carry_preserves_volume_across_a_day_boundary():
     # A bar still forming at the end of a day file must report ALL its volume
     # on the day it completes, not just the post-boundary part. Measured at
     # 0.6% of traded volume on real MNQ data before the carry tuple grew its
-    # (volume, buy_volume, sell_volume) fields -- research/TBars_spec.md §9.
+    # (volume, buy_volume, sell_volume) fields.
     prices = [100.0, 100.25, 100.75, 101.25, 101.0, 99.0, 98.5, 97.0,
               96.5, 96.0, 97.5, 98.5, 99.5, 100.5, 101.5]
     vols = [3, 7, 2, 9, 4, 6, 1, 8, 5, 2, 7, 3, 9, 4, 6]

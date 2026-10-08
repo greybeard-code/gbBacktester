@@ -1,6 +1,6 @@
 """Wave Bars geometry, seed behaviour, volume identity, and cross-day carry.
 
-Port spec: `nt8 code/HiLoRider/WaveBars/WaveBars.md`. Wave Bars is the TBars
+Wave Bars is the TBars
 algorithm with three differences, so this file concentrates on those (the
 shared hot loop is exercised by test_tbars.py, and `build_tbar_bars` was
 verified bit-identical across the `_build_tbar_family_core` extraction):
@@ -218,7 +218,7 @@ def test_bar_volume_sums_to_traded_volume_exactly():
     # AddBar, so the breakout tick lands in the NEW bar only — this repo's own
     # [i0, i1) convention. Nothing is lost or double-counted; the only shortfall
     # is the bar still forming when the data ends. TBars cannot make this
-    # assertion (NT8 counts the breakout tick twice, TBars_spec.md §8.1).
+    # assertion (NT8 counts the breakout tick twice).
     for seed in (0, 1, 2, 5):
         day = _walk(seed, 2000, gaps=2)
         bars = build_wave_bars(day, N, TICK)

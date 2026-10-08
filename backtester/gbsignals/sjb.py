@@ -1,6 +1,6 @@
 """gbSuperJumpBoost port — supply/demand zones from stalled trailing vectors.
 
-Source: nt8 code/GodZillaKilla/indicators/gbSuperJumpBoost.cs (OnBarUpdate
+Source: the NinjaScript indicator gbSuperJumpBoost (OnBarUpdate
 1051-1066, ComputeJumpBoostInfo 1570-1690, FindZoneInfo 1457-1529,
 CheckBrokenAndFindSignal 1323-1436, IsCloseOk 1438-1455).
 

@@ -27,7 +27,7 @@ Signal (all thresholds sweepable, nothing hand-picked yet):
 
 Prop-firm posture matches the rest of the repo: full Globex trading day
 session with ONE flatten before the 17:00 ET halt, and min_hold_s left at 0
-here (set it to 30 to price in the Apex minimum-hold rule — see CLAUDE.md).
+here (set it to 30 to price in the Apex minimum-hold rule).
 
 **FAILED VALIDATION 2026-08-06 — recorded negative result, do not deploy.**
 Defaults over 510 days (2024-12-16..2026-07-31, MNQ 5m): net **-$6,037**,

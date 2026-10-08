@@ -188,7 +188,7 @@ class KAMA:
 
     Signature order follows NT8's: KAMA(fast, period, slow), the
     efficiency-ratio period in the MIDDLE slot. Two NT8 warmup quirks are
-    reproduced deliberately (see research/KamaRegime_spec.md §2):
+    reproduced deliberately:
 
       * for the first `period` bars the value IS the input price — the
         adaptive recursion only starts at bar `period`, seeded off that;
@@ -248,15 +248,14 @@ class KAMA:
 
 
 class KamaRegime:
-    """The tradable half of KamaRegimePro (nt8 code/GodZillaKilla/indicators/
-    kamareginepro.cs): a bull/bear trend regime from the sign of the KAMA
+    """The tradable half of KamaRegimePro (a community NT8
+    indicator): a bull/bear trend regime from the sign of the KAMA
     slope, with a sticky flat band and a confirm-bars debounce.
 
     Slope is measured in TICKS PER BAR, so `flat_threshold` is only
     comparable across instruments after dividing by tick size — and it is
     calibrated for time bars. On renko/TBars closes every with-trend bar
-    moves a fixed number of ticks, so the band rarely binds; see
-    research/KamaRegime_spec.md §5 before using it on those.
+    moves a fixed number of ticks, so the band rarely binds; calibrate it before using it on those.
 
     The background paint, the ★ flip marker and the WPF readout card are
     chart cosmetics and are not ported. update(close) once per bar, then read:

@@ -164,7 +164,7 @@ def load_atm_template(path: str | Path) -> AtmSpec:
 # the Terminator PK funded template (100/4 -> r100-4). 20821 is SaberRenko's
 # (Value=bar size, BaseBarsPeriodValue=offset, Value2=time filter seconds —
 # NOTE Value2 means something different per bar type: ninZaRenko's trend
-# threshold vs SaberRenko's time filter; see research/SaberRenko_spec.md §7
+# threshold vs SaberRenko's time filter
 # Phase 4). BaseBarsPeriodValue is present but unused (=1) in ninZaRenko
 # templates — confirmed against the same reference template used for
 # _BAR_TYPE_RENKO.
@@ -174,9 +174,8 @@ def load_atm_template(path: str | Path) -> AtmSpec:
 # overwrites them with BaseBarsPeriodValue/2 and BaseBarsPeriodValue*2 on
 # every load, so they are read back only to verify that assumption holds.
 # Older TBars builds registered different ids (2015, and 15 which COLLIDES
-# with NT8's built-in Delta type); neither is mapped — see
-# research/TBars_spec.md §7.
-# 91001 is gbTBars (NinjaScript/gbTBars/gbTBars.cs) — the GreyBeard build of
+# with NT8's built-in Delta type); neither is mapped.
+# 91001 is gbTBars (the GreyBeard NinjaScript build) — the GreyBeard build of
 # the same bar type on its own id so it coexists with the vendor's. Identical
 # geometry and identical Speed-Settings derivation, so it maps to the SAME
 # `tb<N>` BarSpec; it only differs where the vendor build is wrong (no per-tick
@@ -184,7 +183,7 @@ def load_atm_template(path: str | Path) -> AtmSpec:
 # inverting the thresholds). That second fix makes gbTBars agree with this
 # port's DEFAULT `reset_carries_dir=False`, so a gbTBars chart should show
 # BETTER parity than the 79.3% measured against stock TBars.
-# 77077 is Wave Bars (FlowMatriX, `nt8 code/HiLoRider/WaveBars/`). Same
+# 77077 is Wave Bars (FlowMatriX). Same
 # algorithm as TBars but its ONE user parameter lives in **Value** ("Wave
 # Size"), NOT BaseBarsPeriodValue — Configure removes BaseBarsPeriodValue and
 # Value2 from the property grid entirely, so there is no derived pair to
@@ -256,7 +255,7 @@ def _parse_bar_spec(el: ET.Element, name: str) -> str:
                 "TBars derives both from BaseBarsPeriodValue in "
                 "State.Configure, so a template disagreeing here was not "
                 "written by the bar type this port models — check the "
-                "BarsPeriodTypeSerialize id (research/TBars_spec.md §7).")
+                "BarsPeriodTypeSerialize id.")
         return f"tb{speed}"
     if type_id == _BAR_TYPE_WAVE:
         return f"w{value}"

@@ -1,6 +1,6 @@
 """SaberRenko bar geometry, cache, and cross-day carry.
 
-Reverse-engineered spec: research/SaberRenko_spec.md. All hand-computed
+Reverse-engineered from chart exports. All hand-computed
 cases here use bar_ticks=4, offset_ticks=2 (tick 0.25 -> bar_size=1.0,
 offset_size=0.5) unless noted, matching the small round numbers
 test_renko_carry.py/test_bars_account.py use for ninZaRenko. `parse_barspec`
@@ -217,7 +217,7 @@ def test_carry_preserves_volume_across_a_day_boundary():
     # A bar still forming at the end of a day file must report ALL its volume
     # on the day it completes, not just the post-boundary part -- the carry
     # tuple's last three fields. Same hole TBars had; measured there at 0.6%
-    # of traded volume on real MNQ data (research/TBars_spec.md §9).
+    # of traded volume on real MNQ data.
     prices = [100.0, 100.25, 100.5, 100.75, 101.0, 101.25,
               101.5, 101.75, 102.0, 102.25, 102.5, 102.75]
     vols = [4, 2, 9, 3, 7, 1, 8, 5, 6, 2, 9, 3]

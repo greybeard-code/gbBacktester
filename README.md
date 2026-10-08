@@ -4,27 +4,37 @@ Tick-level futures backtester for NinjaTrader Market Replay data converted
 to Parquet (see [Data](#data)). Built for fast iteration on intraday
 prop-firm strategies before porting them to NinjaTrader 8.
 
-## New here?
+## Install
 
-1. Clone this repo and create a virtualenv (`pip install -r requirements.txt`).
-2. Point your own tick data at it: set `BACKTESTER_DATA_ROOT` to wherever
-   your NinjaTrader Market Replay Parquet repo lives (layout in
-   [Data](#data)).
-3. Run the tests (`python -m pytest tests -q`, no data needed), then try
-   `python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-17`.
+Python 3.12 or newer (developed on 3.14). Linux, macOS and Windows all work.
+
+```bash
+git clone https://github.com/greybeard-code/gbBacktester.git
+cd gbBacktester
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m pytest tests -q          # no market data needed
+```
+
+The dependencies are numpy, pyarrow, plotly, tzdata and pytest. There is no
+pandas on purpose.
+
+Then point it at your tick data: set `BACKTESTER_DATA_ROOT` to wherever your
+NinjaTrader Market Replay Parquet repo lives (layout in [Data](#data)).
 
 ## Quick start
 
-```powershell
-.venv\Scripts\python cli.py strategies\ema_cross.py --start 2026-06-01 --end 2026-06-17
+```bash
+python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-17
 ```
 
-Produces a console summary and an HTML tearsheet in `reports\`
+Produces a console summary and an HTML tearsheet in `reports/`
 (equity curve with the Apex trailing floor overlaid, drawdown, daily P&L,
 trade distribution, full trade list).
 
 First touch of each day reduces the raw ~24M-event file to trade events with
-prevailing bid/ask attached and caches it under `.cache\` (plus per-period bar
+prevailing bid/ask attached and caches it under `.cache/` (plus per-period bar
 caches). First pass over a day costs a few seconds; cached runs are ~0.1 s/day.
 
 ## Data
@@ -170,7 +180,7 @@ the next halt. Fixed by carrying the brick state across day-file boundaries
 and resetting only on a genuine gap (`Catalog.load_bars_sequence` in
 `backtester/data.py`); verified back up to 99.8% bar-for-bar match on the
 same export. If you pulled this repo before that fix and have a populated
-`.cache\bars\`, no action needed — the cache version bump forces a
+`.cache/bars/`, no action needed — the cache version bump forces a
 transparent rebuild on next use. Headline strategy results computed before
 the fix should be treated as approximate for any renko-bar strategy using
 an overnight session.
@@ -226,12 +236,12 @@ timezone-exact regardless of DST. The run prints how many events loaded.
 ## Parameter sweeps
 
 ```
-python sweep.py strategies\ema_cross.py --param fast_period=6,9,12 ^
+python sweep.py strategies/ema_cross.py --param fast_period=6,9,12 \
     --param slow_period=18,21,27 --start 2026-03-01 --end 2026-06-17
 ```
 
 Runs the full grid in parallel, ranks by `--metric` (sharpe default), writes
-`reports\sweep_*.csv` (columns include prop-firm min headroom), and prints a
+`reports/sweep_*.csv` (columns include prop-firm min headroom), and prints a
 per-parameter **sensitivity plateau**
 around the best combo — a spike at one value with collapse next door is
 flagged FRAGILE (data-snooping, per Chan). Combos with fewer than
@@ -240,7 +250,7 @@ flagged FRAGILE (data-snooping, per Chan). Combos with fewer than
 ## Walk-forward analysis
 
 ```
-python walkforward.py strategies\ema_cross.py --param fast_period=6,9,12 ^
+python walkforward.py strategies/ema_cross.py --param fast_period=6,9,12 \
     --param slow_period=18,21,27 --windows 5 --ratio 5
 ```
 
@@ -319,7 +329,7 @@ NinjaTrader, export the same strategy's trades from NT8 Strategy Analyzer
 (tick replay) and run:
 
 ```
-python tools\compare_nt8.py reports\MyStrat_MNQ_trades.csv nt8_export.csv --symbol MNQ
+python tools/compare_nt8.py reports/MyStrat_MNQ_trades.csv nt8_export.csv --symbol MNQ
 ```
 
 It matches trades by direction + entry time and reports entry/exit price
@@ -327,8 +337,8 @@ deltas in ticks.
 
 ## Tests
 
-```powershell
-.venv\Scripts\python -m pytest tests -q
+```bash
+python -m pytest tests -q
 ```
 
 Covers fill semantics (market/limit/stop/bracket/OCO/reversals), account
