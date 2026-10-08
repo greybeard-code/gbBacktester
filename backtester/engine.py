@@ -264,6 +264,7 @@ class Backtest:
                         hist.append(bar)
                         bar_index += 1
                         strat._now_ts = bar.ts
+                        strat._last_price = bar.close
                         # flatten before high-impact news (entries stay gated by
                         # strat.news_blocked in the order helpers)
                         if (self.news_flatten and self.account.position != 0

@@ -336,6 +336,26 @@ Two further controls are modeled:
   setting, every run *reports* how many trades closed in under 10 seconds and
   their P&L, because a result built on very fast hits deserves suspicion.
 
+### Staying inside the floor: `backtester/risk.py`
+
+`PropFirmTracker` measures the trailing floor. `risk.py` helps a strategy
+*obey* it:
+
+- `ApexAccount` presets (account size, target, drawdown, position caps) and a
+  matching `PropFirmConfig`.
+- `RiskBudget` turns the live headroom (equity minus floor) into a maximum size
+  for a given stop distance. `Strategy.size_within_budget(stop_ticks)` returns
+  the largest size that fits, or `0` to stand down.
+- `ProfitBankPolicy` and `Strategy.bank_profit()` close at the account's profit
+  target, or ratchet the stop behind the unrealised peak, because an intraday
+  trailing floor rises with open profit and never recedes.
+- `simulate_eval` runs an equity path through the rules and reports pass,
+  breach or unresolved.
+
+`strategies/apex_budget_ema.py` is a worked example (a demonstration of the
+calls, not an edge). Account figures are presets: check them against your
+firm's current rules.
+
 ## Monte Carlo
 
 Every run (unless `--mc 0`) resamples the closed-trade P&L 2,000× to separate

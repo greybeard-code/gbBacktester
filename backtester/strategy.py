@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .orders import BUY, SELL, BracketSpec, Fill, Order, OrderType
+from .risk import ProfitBankPolicy, RiskBudget
 
 
 @dataclass
@@ -125,11 +126,23 @@ class Strategy:
     news_currencies: tuple[str, ...] = ("USD",)
     news_flatten: bool = False
     news_csv: str | None = None
+    # ---- Apex risk helpers (see risk.py) ----
+    # Profit target (dollars) for this strategy's account; enables the auto-bank
+    # exit in bank_profit(). None = disabled.
+    eval_target: float | None = None
+    # Fraction of the live Apex headroom a single trade may risk (stop risk).
+    risk_max_loss_frac: float = 0.5
+    # Profit-bank: arm the peak-protection stop at this fraction of the target,
+    # then give back no more than this fraction of the open peak.
+    profit_bank_arm_frac: float = 0.5
+    profit_bank_giveback: float = 0.4
 
     def __init__(self):
         self._broker = None      # wired by the engine
         self._account = None
         self._now_ts = 0         # current bar close ts, set by the engine
+        self._last_price = 0.0   # last bar close, set by the engine
+        self._budget = None      # lazy risk.RiskBudget (see _risk_budget)
         self._secondary = {}     # period -> BarHistory, wired by the engine
         self._news = None        # NewsCalendar | None, wired by the engine
 
@@ -300,6 +313,77 @@ class Strategy:
                                 self._broker.spec.point_value,
                                 annual_vol_target,
                                 max_contracts=max_contracts)
+
+    # ---- Apex risk helpers (see risk.py) ----
+    def prop_equity(self, price: float | None = None) -> float:
+        """Account equity marked to `price` (default: the last bar close)."""
+        p = self._last_price if price is None else float(price)
+        return self._account.equity(p)
+
+    def prop_headroom(self, price: float | None = None) -> float:
+        """Live buffer above the Apex trailing floor (equity - floor).
+
+        Returns +inf when the run has no prop config (nothing to respect).
+        """
+        prop = self._broker.prop
+        if prop is None:
+            return float("inf")
+        return self.prop_equity(price) - prop.floor
+
+    def _risk_budget(self) -> RiskBudget:
+        if self._budget is None:
+            cap = self.max_position or self._broker.spec.apex_max_position
+            self._budget = RiskBudget(self._broker.spec,
+                                      self.risk_max_loss_frac,
+                                      apex_max_contracts=cap)
+        return self._budget
+
+    def size_within_budget(self, stop_ticks: float,
+                           price: float | None = None) -> int:
+        """Largest size whose `stop_ticks` stop fits the Apex headroom budget.
+
+        Sized from the live headroom (equity - floor) so a run of losers cannot
+        reach the floor. Returns 0 when even one contract would risk more than
+        the budget (stand down). With no prop config it returns the position
+        cap instead.
+        """
+        spec = self._broker.spec
+        headroom = self.prop_headroom(price)
+        if headroom == float("inf"):
+            return int(self.max_position or spec.apex_max_position)
+        stop_points = float(stop_ticks) * spec.tick_size
+        return self._risk_budget().contracts(headroom, stop_points)
+
+    def bank_profit(self, price: float | None = None,
+                    target: float | None = None) -> bool:
+        """Protect the Apex unrealized peak. Call from on_bar while in a position.
+
+        * open profit >= target -> close (bank the eval pass);
+        * open profit >= arm_frac * target -> ratchet the stop behind the peak
+          so no more than `giveback` of the open peak is given back.
+        Returns True if it acted. Needs `target` or `self.eval_target`.
+        """
+        tgt = target if target is not None else self.eval_target
+        pos = self._account.position
+        rec = self._broker.recorder
+        if tgt is None or pos == 0 or rec.open is None:
+            return False
+        p = self._last_price if price is None else float(price)
+        pv = self._broker.spec.point_value
+        open_pnl = pos * (p - self._account.avg_price) * pv
+        bank = ProfitBankPolicy(tgt, self.profit_bank_arm_frac,
+                                self.profit_bank_giveback)
+        if bank.take_profit(open_pnl):
+            return self.close_position(tag="bank-tp") is not None
+        floor_pnl = bank.floor_pnl(rec.open.mfe)
+        if floor_pnl == float("-inf"):
+            return False
+        cur = self.stop_order
+        if cur is None:
+            return False
+        stop_px = self._account.avg_price + floor_pnl / (pos * pv)
+        better = stop_px > cur.price if pos > 0 else stop_px < cur.price
+        return self.move_stop(stop_px) if better else False
 
     def close_position(self, tag: str = "exit",
                        force: bool = False) -> Order | None:

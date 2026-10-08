@@ -42,6 +42,7 @@ tick bars only change *when the strategy is asked to decide*.
 | `metrics.py`, `report.py` | Statistics dict, console summary, self-contained HTML tearsheet (Plotly from a CDN) and trades CSV. |
 | `montecarlo.py` | Trade-P&L resampling, i.i.d. or circular block bootstrap (chosen automatically when trade autocorrelation is high), prop-firm breach probability and eval-pass probability. |
 | `sweep.py`, `walkforward.py` | Parameter grids over a process pool, a sensitivity report that flags fragile parameters, and rolling in/out-of-sample walk-forward. |
+| `risk.py` | Prop-firm account presets, a headroom-based risk budget, profit banking and an eval simulator, exposed to strategies through `Strategy.size_within_budget` and `Strategy.bank_profit`. |
 | `sizing.py`, `news.py` | Volatility-targeted position sizing and the high-impact news filter. |
 | `nt8config.py` | Reads saved NinjaTrader ATM and strategy templates so a live configuration can drive a backtest. |
 
