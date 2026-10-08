@@ -45,9 +45,9 @@ Parquet: one file per instrument per ET calendar day, from a **continuous**
   RTY and micros) move into next year's folder on the Monday before
   December's 3rd Friday; everything else uses the calendar year.
 - **Producing it:** record or download days with NT8 Market Replay, then
-  convert the `.nrd` files with `nrd_to_parquet.py` from
-  [gbNRDtoCSV](https://github.com/greybeard-code/gbNRDtoCSV). It writes
-  this layout directly.
+  convert the `.nrd` files with
+  [`tools/nrd_to_parquet/nrd_to_parquet.py`](tools/nrd_to_parquet/README.md).
+  It writes this layout directly.
 - **Pointing at it:** set `BACKTESTER_DATA_ROOT` to `<DATA_ROOT>` (the
   default is a Windows `M:\NinjaTrader_DataRepo\RawData\Parquet`; `cli.py`
   also takes `--data-root`). A network share works fine, and read-only is
@@ -63,7 +63,7 @@ sees near-empty bars on those days, most often right around contract rolls.
 The same failure appears when a series' roll logic is later corrected but
 days already converted to Parquet aren't rebuilt.
 
-`audit_repo.py` in gbNRDtoCSV checks a whole repo from file headers and
+[`tools/nrd_to_parquet/audit_repo.py`](tools/nrd_to_parquet/README.md) checks a whole repo from file headers and
 Parquet footers only, without decoding anything. For each day it reports:
 
 - which contract the continuous file really is, and whether that contract
