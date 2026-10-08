@@ -1,5 +1,8 @@
 # gbBacktester
 
+[![tests](https://github.com/greybeard-code/gbBacktester/actions/workflows/tests.yml/badge.svg)](https://github.com/greybeard-code/gbBacktester/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Tick-level futures backtester for NinjaTrader Market Replay data converted
 to Parquet (see [Data](#data)). Built for fast iteration on intraday
 prop-firm strategies before porting them to NinjaTrader 8.
@@ -32,6 +35,39 @@ python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-17
 Produces a console summary and an HTML tearsheet in `reports/`
 (equity curve with the Apex trailing floor overlaid, drawdown, daily P&L,
 trade distribution, full trade list).
+
+### Try it without market data
+
+`examples/make_synthetic_data.py` writes fake random-walk ticks in the layout
+the backtester reads, so you can run everything end to end:
+
+```bash
+python examples/make_synthetic_data.py --out demo_data
+export BACKTESTER_DATA_ROOT=demo_data BACKTESTER_CACHE=demo_cache
+python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-30 --mc-target 3000
+```
+
+Output (random-walk data, so there is no edge and the numbers are noise):
+
+```
+=== EmaCross | MNQ 60s bars | 20260601..20260630 (22 days) ===
+Net P&L:        $104.10   (gross $166.50, commission $62.40)
+Trades:         60   win rate 41.7%   profit factor 1.17
+Avg trade:      $1.73   avg win $29.12   avg loss $-17.83
+Sharpe:         1.50   Sortino: 2.28   Calmar: 6.79
+Max drawdown:   $-175.52 (-0.35%)
+Days:           +11 / -11   best $99.88   worst $-105.20
+Duration:       median 6044s   min 59s   <10s: 0 trades (0.0%, $0.00)
+PROP:           survived; min headroom to threshold $1,821.98 (threshold $2,000.00)
+
+Monte Carlo:    2000 sims of 60 trades (block resampling, block=8, max autocorr 0.25)
+  final P&L:    5% $-252   median $96   95% $464   P(profit) 67%
+  max drawdown: median $-201   5%-worst $-384
+  PROP:         P(breach $2,000 trailing) = 0.0%
+  EVAL:         P(hit $3,000 before breach) = 0.0%   P(breach first) = 0.0%   unresolved = 100.0%
+```
+
+It also writes an HTML tearsheet and a trades CSV to `reports/`.
 
 First touch of each day reduces the raw ~24M-event file to trade events with
 prevailing bid/ask attached and caches it under `.cache/` (plus per-period bar
@@ -287,18 +323,18 @@ start balance + a small buffer. A breach is equity touching the floor.
 The console summary reports either the breach timestamp or the minimum
 headroom that survived; the tearsheet plots the floor under the equity curve.
 
-Two further Apex rules are modeled:
+Two further controls are modeled:
 
 - **Max position size** — `ContractSpec.apex_max_position` (6 full-size minis
   / 60 micros) is enforced by the broker automatically per symbol; override
   via `Strategy.max_position` (`0` disables).
-- **30-second minimum hold** — `Strategy.min_hold_s = 30` blocks
+- **Minimum hold time** — `Strategy.min_hold_s` (default `0`, off) blocks
   `close_position()` until a position has been held that long (`force=True`
-  bypasses it for risk stand-downs like a daily-loss lock). Every run also
-  *reports* sub-30-second exposure (trade count, $ P&L) regardless of whether
-  it's enforced, since a real account may flag or void those trades even
-  when the backtest doesn't gate them — check this before trusting a result
-  built on very short holds.
+  bypasses it for risk stand-downs like a daily-loss lock). It is a knob for
+  modelling a firm's rule, not a rule this project has confirmed for any
+  particular firm: check your own account's terms. Independently of that
+  setting, every run *reports* how many trades closed in under 10 seconds and
+  their P&L, because a result built on very fast hits deserves suspicion.
 
 ## Monte Carlo
 
@@ -345,9 +381,40 @@ Covers fill semantics (market/limit/stop/bracket/OCO/reversals), account
 math, bar building, and the Apex trailing/lock/halt behavior on synthetic
 tick streams.
 
-## Not yet implemented
+## Limitations
 
-- Multi-symbol portfolios (one symbol per `Backtest` run)
+- **L1 only.** Trades plus the prevailing best bid/ask and their sizes. There
+  is no market depth, so queue position is not modelled and a limit order
+  fills only when the trade price goes through it.
+- **One symbol per run.** No multi-symbol portfolios yet.
+- **Data quality is on you.** Check for days converted from an expiring
+  contract (see [Check the data before trusting a backtest](#check-the-data-before-trusting-a-backtest)).
+  Days filled from a vendor feed such as Databento TBBO have trades and the
+  top of book but no standalone quote updates, so quote-size and order-flow
+  fields are thinner on them.
+- **Bar types are re-implementations.** ninZaRenko, SaberRenko, TBars and Wave
+  Bars were matched against NinjaTrader chart exports, not built from vendor
+  source. Parity is high but not bit-perfect on every bar (the tolerance and
+  residuals are described under [Bar types](#bar-types)).
+- **Backtests are not live results.** There is no live-trading component.
+  Slippage, latency, partial fills and rule changes at your firm are not
+  captured.
+- **Prop-firm rules are a model.** Check the real rules of the firm and
+  account type you use.
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md): how a backtest flows through
+  the code, and the no-look-ahead rule.
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup, tests and conventions.
+- [tools/nrd_to_parquet/README.md](tools/nrd_to_parquet/README.md): getting
+  NinjaTrader recordings into Parquet, and auditing the result.
+
+## Disclaimer
+
+For research and education. Nothing here is investment advice, and past or
+simulated performance does not predict future results. Trading futures
+involves substantial risk of loss.
 
 ## License
 

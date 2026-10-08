@@ -1,8 +1,8 @@
 """Run a backtest from the command line.
 
 Usage:
-    python cli.py strategies\\ema_cross.py --start 2026-06-01 --end 2026-06-17
-    python cli.py strategies\\ema_cross.py --symbol MNQ --period 1m --out report.html
+    python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-17
+    python cli.py strategies/ema_cross.py --symbol MNQ --period 1m --out report.html
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def main() -> None:
                     help="eval profit target for P(pass before breach), "
                          "e.g. 3000 for a 50K Apex eval")
     ap.add_argument("--out", default=None,
-                    help="tearsheet path (default reports\\<strategy>_<symbol>.html)")
+                    help="tearsheet path (default reports/<strategy>_<symbol>.html)")
     ap.add_argument("--no-report", action="store_true", help="console output only")
     ap.add_argument("--data-root", default=None)
     args = ap.parse_args()
