@@ -1,0 +1,352 @@
+# backtester
+
+Tick-level futures backtester for NinjaTrader Market Replay data converted
+to Parquet (see [Data](#data)). Built for fast iteration on intraday
+prop-firm strategies before porting them to NinjaTrader 8.
+
+## New here?
+
+1. Clone this repo and create a virtualenv (`pip install -r requirements.txt`).
+2. Point your own tick data at it: set `BACKTESTER_DATA_ROOT` to wherever
+   your NinjaTrader Market Replay Parquet repo lives (layout in
+   [Data](#data)).
+3. Run the tests (`python -m pytest tests -q`, no data needed), then try
+   `python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-17`.
+
+## Quick start
+
+```powershell
+.venv\Scripts\python cli.py strategies\ema_cross.py --start 2026-06-01 --end 2026-06-17
+```
+
+Produces a console summary and an HTML tearsheet in `reports\`
+(equity curve with the Apex trailing floor overlaid, drawdown, daily P&L,
+trade distribution, full trade list).
+
+First touch of each day reduces the raw ~24M-event file to trade events with
+prevailing bid/ask attached and caches it under `.cache\` (plus per-period bar
+caches). First pass over a day costs a few seconds; cached runs are ~0.1 s/day.
+
+## Data
+
+The backtester reads NinjaTrader 8 Market Replay recordings converted to
+Parquet: one file per instrument per ET calendar day, from a **continuous**
+(roll-stitched) series.
+
+```
+<DATA_ROOT>/<YEAR>/<SYM>-<YEAR>_L1/<YYYYMMDD>.parquet
+<DATA_ROOT>/<SYM>-<YEAR>_L1/<YYYYMMDD>.parquet      (older flat layout, also read)
+```
+
+- **Schema (L1):** `Timestamp` (ns, UTC), `MarketDataType` (int8: 0 ask,
+  1 bid, 2 last/trade, …), `Price` (float64), `Volume` (int64). Only L1 is
+  needed; `_L2` depth folders alongside are ignored.
+- **`<YEAR>`** is the roll-season year. Quarterly index futures (ES, NQ, YM,
+  RTY and micros) move into next year's folder on the Monday before
+  December's 3rd Friday; everything else uses the calendar year.
+- **Producing it:** record or download days with NT8 Market Replay, then
+  convert the `.nrd` files with `nrd_to_parquet.py` from
+  [gbNRDtoCSV](https://github.com/greybeard-code/gbNRDtoCSV). It writes
+  this layout directly.
+- **Pointing at it:** set `BACKTESTER_DATA_ROOT` to `<DATA_ROOT>` (the
+  default is a Windows `M:\NinjaTrader_DataRepo\RawData\Parquet`; `cli.py`
+  also takes `--data-root`). A network share works fine, and read-only is
+  enough: the backtester only writes to its cache, `.cache/` by default
+  (`BACKTESTER_CACHE` to move it).
+
+### Check the data before trusting a backtest
+
+A continuous series is only as good as its roll choice. If a day was
+converted from the expiring contract after volume moved to the next one, the
+file looks normal but has almost no trades. The backtest won't error; it just
+sees near-empty bars on those days, most often right around contract rolls.
+The same failure appears when a series' roll logic is later corrected but
+days already converted to Parquet aren't rebuilt.
+
+`audit_repo.py` in gbNRDtoCSV checks a whole repo from file headers and
+Parquet footers only, without decoding anything. For each day it reports:
+
+- which contract the continuous file really is, and whether that contract
+  was the day's volume leader
+- thin days (few trades for that symbol)
+- Parquet days that don't match their source file, and missing days
+
+Run it after each data update, and re-convert anything it flags.
+
+## Writing a strategy
+
+```python
+from backtester import EMA, Strategy
+
+class MyStrat(Strategy):
+    symbol = "MNQ"
+    period = "1m"                    # time 1m; tick 500t; renko r8-4 / saber
+                                     # s64-16; tbars tb120 (see Bar types)
+    session = ("09:30", "16:00")     # US/Eastern; None = full day
+    flat_at_session_end = True
+    qty = 2
+
+    def on_start(self):
+        self.fast, self.slow = EMA(9), EMA(21)
+
+    def on_bar(self, bar, bars):     # bar.open/high/low/close/volume/ts
+        f, s = self.fast.update(bar.close), self.slow.update(bar.close)
+        if self.slow.ready and self.flat and f > s:
+            self.buy_bracket(stop_ticks=40, target_ticks=80)
+```
+
+Hooks: `on_start`, `on_bar(bar, bars)`, `on_fill(fill)`,
+`on_session_end(date)`, `on_finish`.
+Orders: `buy/sell` (market), `buy_bracket/sell_bracket`,
+`buy_limit/sell_limit`, `buy_stop/sell_stop` (all accept
+`stop_ticks`/`target_ticks` brackets), `close_position()`, `cancel_all()`.
+Order management (ATM-style): `move_stop(price)`, `move_target(price)`,
+`move_stop_to_breakeven(offset_ticks=)`, and `stop_order` / `target_order` /
+`working_orders` for direct inspection — call from `on_bar` to trail stops.
+State: `self.position`, `self.flat`, `self.avg_price`, `self.balance`.
+Indicators (incremental, NT8-style): `EMA, SMA, Bollinger, ATR, RSI,
+EfficiencyRatio, Highest, Lowest`.
+
+**Multi-timeframe & tick-level strategies:** declare `secondary_periods =
+["15m"]` to get `on_secondary_bar(bar, bars, period)` fired the instant each
+secondary bar closes (no look-ahead) and `self.secondary(period)` for its
+history. Defining `on_tick(ts, price, index)` switches that run to a
+per-event resolver — orders submitted in `on_tick` fill on later events only
+— for strategies that need intrabar reaction; strategies that define neither
+stay on the fast vectorized path.
+
+**Confluence / NT8-template-driven strategies:** `backtester/nt8config.py`
+parses saved NT8 ATM templates and strategy-template XML (brackets,
+breakeven, tiered trailing, bar type, time windows) so a live NT8 config can
+drive a Python backtest directly; `backtester/atm.py` executes the resulting
+multi-bracket exits.
+
+## Bar types
+
+Set the bar type with the `period` string — on the strategy (`period = "r8-4"`)
+or per run (`--period r8-4`). Five families are supported (`backtester/
+strategy.py::parse_barspec`):
+
+| Syntax | Kind | Meaning |
+|---|---|---|
+| `30s` `1m` `5m` `1h` | **Time** | Fixed clock interval. Bar timestamp = close time (NT8-style); empty bars omitted. A bare integer (`90`) is seconds. |
+| `500t` | **Tick** | Fixed trade-count bars (500 trades per bar). |
+| `r8-4` (`r8`) | **Renko — ninZaRenko** | Brick 8 ticks (body height), trend threshold 4 ticks (with-trend close distance from the prior close). `r8` defaults trend to brick/2. Constraint: trend ≤ brick. |
+| `s64-16` (`s64-16-2`) | **Renko — SaberRenko** | Bar Size B = 64 ticks, Offset O = 16, optional Time Filter in seconds (3rd field, default 1). Constraints: O ≤ B and B a multiple of O (keeps closes on the renko grid). |
+| `tb120` | **TBars** | One "Speed Settings" parameter N = 120 ticks; the port derives trend N//2, reversal N·2, open offset N — so a reversal costs 4× a continuation. N ≥ 2. |
+
+**ninZaRenko** (`r8-4`) implements the published ninZaRenko manual: open offset
+= brick − trend (bars overlap), reversal threshold = 2·brick − trend, equal
+bodies both directions. High/low include the synthetic open, matching what NT8
+indicators see. Recommended configs: 8-4, 15-5, 12-4, 20-5, 30-10. Validated
+bar-for-bar against five real NT8 chart exports.
+
+**SaberRenko** (`s64-16`) is a second vendor renko variant with an independent
+offset parameter and an optional time filter; geometry and parity were checked against NT8 chart exports.
+
+**TBars** (`tb120`) ports the vendor `TBars` bar type (NT8 BarsPeriodType
+98765). Its emitted OHLC is **Heikin-Ashi transformed** (close = 4-way average,
+open = midpoint of synthetic open and prior close) — faithful to what NT8
+charts. Prices are stored on the tick grid, rounded half-to-even inside the
+state loop, exactly as NT8 does. Certified against an NT8 export (geometry and
+bar timing exact; residual is ±1-tick HA-rounding propagation on ~9% of bars).
+
+Bar type only changes *when the strategy is asked to decide*. Orders always
+fill against the real tick stream regardless of bar type, so none of NT8's
+Renko/TBars fantasy-fill problem applies — a bar strategy backtested here gets
+honest fills.
+
+**Fixed (2026-07-11): renko bars reset incorrectly at midnight ET.** Raw
+data is stored as one file per ET calendar day, and the renko builder used
+to reset its brick anchor at the start of every file — correct behavior for
+a real session gap (e.g. the daily 17:00–18:00 ET halt), but *wrong* for an
+overnight session (e.g. `("18:00", "16:55")`) that keeps trading straight
+through midnight ET with no actual gap there. The result: renko geometry
+was correct for the evening leg of each session but silently wrong for the
+rest of the day, every day, for any strategy spanning midnight. Confirmed
+against a real NT8 chart export — bar mismatches were ~0% right after the
+real halt reset, then jumped to 45–69% at midnight and stayed wrong until
+the next halt. Fixed by carrying the brick state across day-file boundaries
+and resetting only on a genuine gap (`Catalog.load_bars_sequence` in
+`backtester/data.py`); verified back up to 99.8% bar-for-bar match on the
+same export. If you pulled this repo before that fix and have a populated
+`.cache\bars\`, no action needed — the cache version bump forces a
+transparent rebuild on next use. Headline strategy results computed before
+the fix should be treated as approximate for any renko-bar strategy using
+an overnight session.
+
+## Order flow (what NT8 backtests can't see)
+
+Every trade in the reduced cache is classified by aggressor side (at/above
+ask = buy, at/below bid = sell), and every bar — any type — carries
+`bar.buy_volume`, `bar.sell_volume`, and `bar.delta`. `bars.delta` /
+`bars.cum_delta` (session-cumulative) are available as history arrays for
+delta-divergence and order-flow filters. Prevailing bid/ask queue sizes are
+also cached per trade for order-imbalance (OIB) research.
+
+## Position sizing & risk
+
+- `self.vol_target_contracts(daily_atr_points)` — Carver volatility
+  targeting (15% annual default). Pass a *daily* ATR.
+- `--daily-loss-limit 600` — flatten and stand down for the rest of the day
+  when the day's loss touches the limit; hit days are listed in the summary.
+
+## News filter (high-impact / ForexFactory "red folder" events)
+
+Block new entries around high-impact economic releases (FOMC, CPI, NFP, …).
+The event calendar is `data/ff_high_impact_news.csv` — ForexFactory **red
+folder** (High impact) events, gathered by `tools/fetch_ff_news.py` (see
+`data/README.md` for the schema, provenance, and refresh cadence; run it
+weekly to keep the file current, or with `--start/--end` to backfill a range).
+
+Turn it on per strategy or per run:
+
+```python
+class MyStrat(Strategy):
+    news_filter = True            # off by default
+    news_pre_min = 5              # stop entering 5 min before an event
+    news_post_min = 5             # resume 5 min after
+    news_currencies = ("USD",)    # which events matter (USD for MNQ/ES)
+    news_flatten = False          # also flatten an open position on window entry
+    news_csv = None               # None -> data/ff_high_impact_news.csv
+```
+
+```
+--news-filter [--news-pre 5] [--news-post 5] [--news-currencies USD,EUR]
+              [--news-flatten] [--news-csv path]
+```
+
+Entries submitted inside a window are suppressed (the `buy*/sell*` helpers
+return `None`); **protective stops, targets, and exits are never gated**, so a
+position opened before the window still manages itself normally. Call
+`self.news_blocked()` in custom entry logic to gate a discretionary decision.
+Event times are matched on ForexFactory's UTC `dateline`, so the window is
+timezone-exact regardless of DST. The run prints how many events loaded.
+
+## Parameter sweeps
+
+```
+python sweep.py strategies\ema_cross.py --param fast_period=6,9,12 ^
+    --param slow_period=18,21,27 --start 2026-03-01 --end 2026-06-17
+```
+
+Runs the full grid in parallel, ranks by `--metric` (sharpe default), writes
+`reports\sweep_*.csv` (columns include prop-firm min headroom), and prints a
+per-parameter **sensitivity plateau**
+around the best combo — a spike at one value with collapse next door is
+flagged FRAGILE (data-snooping, per Chan). Combos with fewer than
+`--min-trades` rank last.
+
+## Walk-forward analysis
+
+```
+python walkforward.py strategies\ema_cross.py --param fast_period=6,9,12 ^
+    --param slow_period=18,21,27 --windows 5 --ratio 5
+```
+
+Rolling IS/OOS windows (5:1 default): optimize the grid in-sample, run the
+best combo out-of-sample, roll forward. Reports per-window IS vs OOS, the
+stitched OOS net/Sharpe (the only numbers that haven't seen their own data),
+and walk-forward efficiency with Davey's verdict (< 0.5 = likely curve-fit).
+
+## Fill model
+
+- Strategy logic runs on bar closes; orders resolve against the underlying
+  trade-event stream inside each bar (no look-ahead — fills happen before the
+  strategy sees the bar).
+- Market orders fill on the next trade event at the prevailing **ask** (buy) /
+  **bid** (sell), plus `--slippage` ticks if set. The spread is a real cost.
+- Limit orders fill when price trades **through** the limit (touch alone never
+  fills — approximates queue risk). Marketable limits fill at the quote.
+- Stops trigger on last, fill at the quote, never better than the stop price.
+- Commissions are per-contract round-turn defaults in
+  `backtester/contracts.py` — adjust to your firm's rates.
+
+## Prop-firm simulation
+
+The trailing threshold (modeled on Apex's real rule set) trails the
+**intratrade** equity peak (unrealized included) and, by default, locks at
+start balance + a small buffer. A breach is equity touching the floor.
+
+```
+--balance 50000 --prop-threshold 2000     # 50K account defaults ($2,000)
+--prop-halt                               # stop the test at the breach
+--prop-threshold 0                        # disable
+```
+
+The console summary reports either the breach timestamp or the minimum
+headroom that survived; the tearsheet plots the floor under the equity curve.
+
+Two further Apex rules are modeled:
+
+- **Max position size** — `ContractSpec.apex_max_position` (6 full-size minis
+  / 60 micros) is enforced by the broker automatically per symbol; override
+  via `Strategy.max_position` (`0` disables).
+- **30-second minimum hold** — `Strategy.min_hold_s = 30` blocks
+  `close_position()` until a position has been held that long (`force=True`
+  bypasses it for risk stand-downs like a daily-loss lock). Every run also
+  *reports* sub-30-second exposure (trade count, $ P&L) regardless of whether
+  it's enforced, since a real account may flag or void those trades even
+  when the backtest doesn't gate them — check this before trusting a result
+  built on very short holds.
+
+## Monte Carlo
+
+Every run (unless `--mc 0`) resamples the closed-trade P&L 2,000× to separate
+skill from ordering luck: 5/50/95th-percentile final P&L, max-drawdown
+distribution, **P(breaching the Apex trailing threshold)** across orderings,
+and with `--mc-target 3000` the eval race — P(hitting the target before a
+breach). Block bootstrap is used automatically when trade returns are
+serially correlated (|r| > 0.2, per Davey).
+
+## CLI
+
+```
+python cli.py <strategy.py> [--symbol MNQ] [--period 1m] [--start D] [--end D]
+              [--balance 50000] [--prop-threshold 2000] [--prop-halt]
+              [--daily-loss-limit 600] [--news-filter [--news-pre 5]
+              [--news-post 5] [--news-currencies USD] [--news-flatten]]
+              [--slippage 0] [--mc 2000] [--mc-target 3000] [--out report.html]
+              [--no-report] [--data-root P]
+```
+
+`--period` accepts any bar type above (`1m`, `500t`, `r8-4`, `s64-16`, `tb120`).
+`--prop-threshold`/`--prop-halt` also accept the legacy `--apex-*` names.
+Env overrides: `BACKTESTER_DATA_ROOT`, `BACKTESTER_CACHE`.
+
+Each report also writes `<name>_trades.csv`. To validate fills against
+NinjaTrader, export the same strategy's trades from NT8 Strategy Analyzer
+(tick replay) and run:
+
+```
+python tools\compare_nt8.py reports\MyStrat_MNQ_trades.csv nt8_export.csv --symbol MNQ
+```
+
+It matches trades by direction + entry time and reports entry/exit price
+deltas in ticks.
+
+## Tests
+
+```powershell
+.venv\Scripts\python -m pytest tests -q
+```
+
+Covers fill semantics (market/limit/stop/bracket/OCO/reversals), account
+math, bar building, and the Apex trailing/lock/halt behavior on synthetic
+tick streams.
+
+## Not yet implemented
+
+- Multi-symbol portfolios (one symbol per `Backtest` run)
+
+## License
+
+The code in this repository is released under the [MIT License](LICENSE).
+
+The bar-type implementations (ninZaRenko, SaberRenko, TBars, Wave Bars) are
+independent re-implementations written from published manuals and measured
+NinjaTrader chart exports. They contain no third-party source code. Product
+and trademark names belong to their owners and are used only to say what a
+bar type is compatible with. Market data (NinjaTrader recordings, Databento,
+ForexFactory) is not included and has its own terms; `tools/fetch_ff_news.py`
+fetches the news calendar for you to use under ForexFactory's terms.

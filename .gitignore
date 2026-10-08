@@ -1,0 +1,12 @@
+.venv/
+.cache/
+reports/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+# Market data is licensed and large; never commit it.
+data/*.parquet
+data/*.csv
+*.dll
+*.zip
