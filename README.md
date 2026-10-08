@@ -1,4 +1,4 @@
-# backtester
+# gbBacktester
 
 Tick-level futures backtester for NinjaTrader Market Replay data converted
 to Parquet (see [Data](#data)). Built for fast iteration on intraday
