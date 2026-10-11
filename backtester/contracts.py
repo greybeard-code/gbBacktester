@@ -41,6 +41,9 @@ SPECS: dict[str, ContractSpec] = {
     "RTY": ContractSpec("RTY", 0.10, 50.0,   3.10, "E-mini Russell 2000"),
     "CL":  ContractSpec("CL",  0.01, 1000.0, 3.34, "Crude Oil"),
     "GC":  ContractSpec("GC",  0.10, 100.0,  3.54, "Gold"),
+    # SI commission is ASSUMED equal to GC (same COMEX metals fee class): confirm it
+    # against your broker's schedule and override it if it differs.
+    "SI":  ContractSpec("SI",  0.005, 5000.0, 3.54, "Silver"),
     "MES": ContractSpec("MES", 0.25,  5.0,   1.04, "Micro E-mini S&P 500", is_micro=True),
     "MNQ": ContractSpec("MNQ", 0.25,  2.0,   1.04, "Micro E-mini Nasdaq-100", is_micro=True),
     "MYM": ContractSpec("MYM", 1.00,  0.5,   1.04, "Micro E-mini Dow", is_micro=True),

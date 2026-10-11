@@ -88,7 +88,8 @@ MDT_ASK, MDT_BID, MDT_LAST = 0, 1, 2
 
 QUARTERLY = {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}
 METALS = {"GC", "MGC"}
-MAINTAINED = QUARTERLY | METALS
+SILVER = {"SI"}                       # Mar/May/Jul/Sep/Dec, gold's roll rule (measured 2026-10-10)
+MAINTAINED = QUARTERLY | METALS | SILVER
 MONTH_CODE = "FGHJKMNQUVXZ"          # Jan..Dec
 
 # Days on which the market itself was shut -- no vendor has data for these, so
@@ -109,6 +110,9 @@ CONTRACT_OVERRIDE: dict[tuple[str, str], str] = {}
 # Get-ActiveContractForDate in Audit-ContinuousContracts.ps1) so the fetched
 # day comes from the same contract the rest of the continuous series uses.
 # Gold lists Feb/Apr/Jun/Aug/Dec only in the continuous series (no October).
+# Silver lists Mar/May/Jul/Sep/Dec and rolls like gold: 3 business days before
+# the 1st of the expiry month was the minimum (19 non-leader days of 1,938, vs
+# 36 at 2 and 54 at 4) when measured on the 2019-2026 per-contract header volume.
 # --------------------------------------------------------------------------
 
 def third_friday(year: int, month: int) -> date:
@@ -134,6 +138,8 @@ def active_contract(symbol: str, d: date) -> tuple[int, int]:
         months, rule = (3, 6, 9, 12), "quarterly"
     elif symbol in METALS:
         months, rule = (2, 4, 6, 8, 12), "gold"
+    elif symbol in SILVER:
+        months, rule = (3, 5, 7, 9, 12), "gold"
     else:                                   # CL/MCL and anything else
         months, rule = tuple(range(1, 13)), "crudeoil"
 
@@ -174,7 +180,8 @@ def neighbour_symbols(symbol: str, d: date) -> list[str]:
     roll-edge day the recording may hold either, so a splice that doesn't join
     up with the rule's contract tries these."""
     months = ((3, 6, 9, 12) if symbol in QUARTERLY else
-              (2, 4, 6, 8, 12) if symbol in METALS else tuple(range(1, 13)))
+              (2, 4, 6, 8, 12) if symbol in METALS else
+              (3, 5, 7, 9, 12) if symbol in SILVER else tuple(range(1, 13)))
     y, m = active_contract(symbol, d)
     i = months.index(m)
     prev = (y, months[i - 1]) if i > 0 else (y - 1, months[-1])
