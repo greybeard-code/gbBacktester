@@ -6,7 +6,7 @@ Bug reports and pull requests are welcome.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt     # runtime dependencies plus pytest and hypothesis
+pip install -r requirements.txt
 python -m pytest tests -q
 ```
 
@@ -21,8 +21,8 @@ creates fake ticks if you want to run the CLI end to end.
   hand-computed expected value (see `tests/conftest.py::make_day`).
 - Anything that changes cached output must bump `CACHE_VERSION` or
   `BARS_VERSION` in `backtester/data.py`.
-- Keep the runtime dependency list short. There is no pandas on purpose; test and
-  tool dependencies live in `requirements-dev.txt`.
+- Keep the dependency list short. There is no pandas on purpose; add a new
+  dependency to `requirements.txt` only if it is really needed.
 - A change to engine behavior comes with a test that fails without it (break the
   behavior, run the test, restore). Unit tests run with the default order latency
   zeroed (see `tests/conftest.py`); a test that needs the real default is marked

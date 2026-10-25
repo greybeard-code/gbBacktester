@@ -3,3 +3,5 @@ pyarrow
 plotly
 tzdata
 pytest
+pytest-cov
+hypothesis

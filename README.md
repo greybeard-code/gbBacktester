@@ -20,8 +20,9 @@ pip install -r requirements.txt
 python -m pytest tests -q          # no market data needed
 ```
 
-The dependencies are numpy, pyarrow, plotly, tzdata and pytest. There is no
-pandas on purpose.
+`requirements.txt` is the one file you need: numpy, pyarrow, plotly and tzdata
+to run backtests, plus pytest, pytest-cov and hypothesis for the tests. There is
+no pandas on purpose.
 
 Then point it at your tick data: set `BACKTESTER_DATA_ROOT` to wherever your
 NinjaTrader Market Replay Parquet repo lives (layout in [Data](#data)).
@@ -487,7 +488,7 @@ not only the Sharpe of the best one.
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 python -m pytest tests -q
 ```
 
