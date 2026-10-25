@@ -33,6 +33,11 @@ What it found:
 - **So** if slippage should vary, key it to the session and to recent volatility. Calendar month and
   weekday add little.
 
+**Heatmaps:** [results/trends.html](results/trends.html) is a self-contained interactive page
+(plotly, works offline): spread by time of day, month and weekday for all 14 symbols, plus
+month-by-time and weekday-by-time views with a symbol picker. GitHub shows HTML files as source, so
+download it and open it in a browser. Regenerate it with `trends.py` (below).
+
 ## Recommended slippage for last-price backtesters (NT8 Strategy Analyzer and similar)
 
 Ticks **per side** (apply to the entry and again to the exit):
@@ -40,20 +45,22 @@ Ticks **per side** (apply to the entry and again to the exit):
 - **typical** = ceil(mean spread / 2), the half spread a market order crosses on average;
 - **conservative** = p90 of the spread, the "upper end of the typical bid/ask spread" rule.
 
-| Symbol | RTH 09:30-16:00 typical / conservative | Reopen 18:00-20:00 typical / conservative | RTH round trip, typical / conservative |
-|---|---|---|---|
-| ES / MES | 1 / 1 | 1 / 2 | $25 / $25 (ES); $2.50 / $2.50 (MES) |
-| MNQ | 1 / 3 | 2 / 4 | $1 / $3 |
-| NQ (provisional) | 2 / 4 | 3 / 9 | $20 / $40 |
-| YM / MYM | 1 / 3 and 1 / 2 | 2 / 6 and 2 / 7 | $10 / $30 (YM); $1 / $2 (MYM) |
-| RTY / M2K | 1 / 2 | 2 / 5 | $10 / $20 (RTY); $1 / $2 (M2K) |
-| GC / MGC | 2 / 7 and 2 / 4 | 4 / 12 and 2 / 7 | $40 / $140 (GC); $4 / $8 (MGC) |
-| SI | 3 / 8 | 4 / 13 | $150 / $400 |
-| CL / MCL | 1 / 2 | 2 / 6 | $20 / $40 (CL); $2 / $4 (MCL) |
-| ZN | 1 / 1 | 1 / 1 | $31.25 / $31.25 |
+| Symbol | RTH 09:30-16:00 typical / conservative | Reopen 18:00-20:00 typical / conservative | Overnight 20:00-09:30 typical / conservative | Round trip $, RTH (typical / conservative) | Round trip $, overnight (typical / conservative) |
+|---|---|---|---|---|---|
+| ES / MES | 1 / 1 | 1 / 2 | 1 / 1 | $25 / $25 (ES); $2.50 / $2.50 (MES) | $25 / $25 (ES); $2.50 / $2.50 (MES) |
+| MNQ | 1 / 3 | 2 / 4 | 2 / 3 | $1 / $3 | $2 / $3 |
+| NQ (provisional) | 2 / 4 | 3 / 9 | 2 / 6 | $20 / $40 | $20 / $60 |
+| YM / MYM | 1 / 3 and 1 / 2 | 2 / 6 and 2 / 7 | 2 / 3 and 2 / 3 | $10 / $30 (YM); $1 / $2 (MYM) | $20 / $30 (YM); $2 / $3 (MYM) |
+| RTY / M2K | 1 / 2 | 2 / 5 | 1 / 3 and 1 / 2 | $10 / $20 (RTY); $1 / $2 (M2K) | $10 / $30 (RTY); $1 / $2 (M2K) |
+| GC / MGC | 2 / 7 and 2 / 4 | 4 / 12 and 2 / 7 | 3 / 7 and 2 / 5 | $40 / $140 (GC); $4 / $8 (MGC) | $60 / $140 (GC); $4 / $10 (MGC) |
+| SI | 3 / 8 | 4 / 13 | 3 / 9 | $150 / $400 | $150 / $450 |
+| CL / MCL | 1 / 2 | 2 / 6 | 1 / 2 | $20 / $40 (CL); $2 / $4 (MCL) | $20 / $40 (CL); $2 / $4 (MCL) |
+| ZN | 1 / 1 | 1 / 1 | 1 / 1 | $31.25 / $31.25 | $31.25 / $31.25 |
 
 `results/slippage_recommendations_2026.csv` has every symbol for four sessions (RTH, reopen,
-overnight 20:00-09:30, all hours), with mean, p75, p90 and p95 spread in ticks.
+overnight 20:00-09:30, all hours), with mean, p75, p90 and p95 spread in ticks. The overnight
+session is everything between the reopen and the next morning's cash open, so it is the right row for
+a strategy that runs through the Asian and London hours.
 
 How to use it:
 
@@ -124,8 +131,9 @@ job. The full run took about 25 minutes with one worker.
 - `summarize.py`: pools the per-day files into the summary, monthly and coverage tables.
 - `recommend.py`: turns the pooled histograms into per-session slippage ticks.
 - `trends.py`: the time-of-day, month and weekday heatmaps (`out/trends.html`) and `trend_stats.csv`.
+  `results/trends.html` is a copy of that page from the 2026 run.
 - `results/`: the pooled outputs of the 2026 run (`slippage_recommendations_2026.csv`,
-  `spread_30m_summary_2026.csv`, `coverage_2026.csv`). The per-day tables are large and are rebuilt
+  `spread_30m_summary_2026.csv`, `coverage_2026.csv`, `trends.html`). The per-day tables are large and are rebuilt
   by the commands above (`out/` is gitignored).
 - `../tests/test_slippage_study.py`: hand-computed tests, including DST days, the stale-quote cap,
   chunk invariance and pooled percentiles.

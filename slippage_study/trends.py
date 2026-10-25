@@ -189,7 +189,7 @@ def main():
     parts = ['<!doctype html><html><head><meta charset="utf-8"><title>Spread trends 2026</title>'
              '<style>body{font:15px system-ui;margin:24px;max-width:1500px}h2{margin:36px 0 4px}p{color:#555;margin:2px 0 10px}</style>'
              '</head><body><h1>Bid/ask spread trends, 2026 (trade-weighted, ticks)</h1>'
-             '<p>Derived from tick data you may not be allowed to redistribute: check before sharing this page.</p>']
+             '<p>Pooled statistics from 2026 L1 tick data: trade-weighted mean spread in ticks, 14 futures symbols. Hover a cell for the value.</p>']
     for i, (h, note, fig) in enumerate(figs):
         parts.append(f"<h2>{h}</h2><p>{note}</p>")
         parts.append(fig.to_html(full_html=False, include_plotlyjs="inline" if i == 0 else False))
