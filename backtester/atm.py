@@ -56,5 +56,6 @@ def submit_atm_exits(broker, spec: AtmSpec, side: int,
     """Build and submit the legs against a live broker."""
     orders = atm_exit_orders(spec, side, entry_price, broker.spec.tick_size)
     for o in orders:
+        o.bracket_leg = True            # delayed by the bracket latency, if set
         broker.submit(o)
     return orders

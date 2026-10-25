@@ -25,14 +25,22 @@ def compute(result) -> dict:
             sortino = float(daily_ret.mean() / downside.std(ddof=1)
                             * np.sqrt(TRADING_DAYS))
 
-    # max drawdown on the bar-close equity curve
-    max_dd = dd_pct = 0.0
+    # max drawdown on the bar-close equity curve (kept for comparison; it
+    # misses any dip that recovers inside a bar)
+    max_dd_bar = dd_pct_bar = 0.0
     if len(result.equity):
         peak = np.maximum.accumulate(result.equity)
         dd = result.equity - peak
-        max_dd = float(dd.min())
+        max_dd_bar = float(dd.min())
         troughs = peak > 0
-        dd_pct = float((dd[troughs] / peak[troughs]).min() * 100) if troughs.any() else 0.0
+        dd_pct_bar = (float((dd[troughs] / peak[troughs]).min() * 100)
+                      if troughs.any() else 0.0)
+    # the headline max drawdown is tick-level when the run tracked it
+    tracker = getattr(result, "drawdown", None)
+    if tracker is not None:
+        max_dd, dd_pct = float(tracker.max_dd), float(tracker.max_dd_pct)
+    else:
+        max_dd, dd_pct = max_dd_bar, dd_pct_bar
 
     total_pnl = float(pnl.sum()) if len(pnl) else 0.0
     gross_win = float(wins.sum()) if len(wins) else 0.0
@@ -63,6 +71,8 @@ def compute(result) -> dict:
         "calmar": calmar,
         "max_drawdown": max_dd,
         "max_drawdown_pct": dd_pct,
+        "max_drawdown_bar": max_dd_bar,
+        "max_drawdown_bar_pct": dd_pct_bar,
         "commission": result.total_commission,
         "trading_days": len(result.daily_pnl),
         "winning_days": int((daily > 0).sum()) if len(daily) else 0,
@@ -113,18 +123,22 @@ def format_console(result, stats: dict) -> str:
     def d(x):
         return f"${x:,.2f}" if x == x else "n/a"   # NaN-safe
 
+    def r(x, spec=".2f", suffix=""):
+        # ratios are NaN when undefined (no trades, no losing day, one day...)
+        return f"{x:{spec}}{suffix}" if x == x else "n/a"
+
     lines = [
         "",
         f"=== {result.strategy_name} | {result.symbol} {result.period} bars | "
         f"{result.days[0]}..{result.days[-1]} ({stats['trading_days']} days) ===",
         f"Net P&L:        {d(stats['net_pnl'])}   (gross {d(stats['gross_pnl'])}, "
         f"commission {d(stats['commission'])})",
-        f"Trades:         {stats['total_trades']}   win rate {stats['win_rate']:.1f}%   "
-        f"profit factor {stats['profit_factor']:.2f}",
+        f"Trades:         {stats['total_trades']}   win rate {r(stats['win_rate'], '.1f', '%')}   "
+        f"profit factor {r(stats['profit_factor'])}",
         f"Avg trade:      {d(stats['avg_trade'])}   avg win {d(stats['avg_win'])}   "
         f"avg loss {d(stats['avg_loss'])}",
-        f"Sharpe:         {stats['sharpe']:.2f}   Sortino: {stats['sortino']:.2f}   "
-        f"Calmar: {stats['calmar']:.2f}",
+        f"Sharpe:         {r(stats['sharpe'])}   Sortino: {r(stats['sortino'])}   "
+        f"Calmar: {r(stats['calmar'])}",
         f"Max drawdown:   {d(stats['max_drawdown'])} ({stats['max_drawdown_pct']:.2f}%)",
         f"Days:           +{stats['winning_days']} / -{stats['losing_days']}   "
         f"best {d(stats['best_day'])}   worst {d(stats['worst_day'])}",
@@ -146,10 +160,47 @@ def format_console(result, stats: dict) -> str:
             lines.append(
                 f"PROP:           survived; min headroom to threshold "
                 f"{d(stats['prop_min_headroom'])} (threshold {d(stats['prop_threshold'])})")
+    mode = getattr(result, "daily_limit_mode", None)
+    how = {"gate": " [entry gate: realized P&L]",
+           "kill": " [kill switch: equity incl. open P&L]"}.get(mode, "")
     if result.dll_days:
         lines.append(f"Daily loss limit hit on {len(result.dll_days)} day(s): "
                      + ", ".join(result.dll_days[:5])
-                     + ("..." if len(result.dll_days) > 5 else ""))
+                     + ("..." if len(result.dll_days) > 5 else "") + how)
+    dpt = getattr(result, "dpt_days", None)
+    if dpt:
+        lines.append(f"Daily profit target hit on {len(dpt)} day(s): "
+                     + ", ".join(dpt[:5]) + ("..." if len(dpt) > 5 else "") + how)
+    for day, note in sorted((getattr(result, "day_notes", None) or {}).items()):
+        lines.append(f"Note {day}:  {note}")
+    rolls = getattr(result, "rolls", None)
+    if rolls:
+        flat = [r["date"] for r in rolls if r["flattened"]]
+        lines.append(f"Rolls:          {len(rolls)} contract roll(s) in the run; flattened "
+                     f"a position at {len(flat)}"
+                     + (": " + ", ".join(flat[:6]) + ("..." if len(flat) > 6 else "")
+                        if flat else ""))
+    if getattr(result, "roll_entry_block_minutes", 0):
+        lines.append(f"Roll blackout:  no new entries for {result.roll_entry_block_minutes:g} min "
+                     f"after each roll; {result.roll_entries_refused} entry order(s) refused")
+    lat = getattr(result, "latency_ms", None)
+    if lat is not None:
+        lines.append(f"Order latency:  {lat:g} ms" if lat > 0 else
+                     "Order latency:  OFF (0 ms): the optimistic case, fills as if instant")
+    cx, mod, br = (getattr(result, "cancel_latency_ms", 0.0), getattr(result, "modify_latency_ms", 0.0),
+                   getattr(result, "bracket_latency_ms", None))
+    if cx or mod or br is not None:
+        lines.append(f"Exec latency:   cancel {cx:g} ms, modify {mod:g} ms, bracket "
+                     + ("= order latency" if br is None else f"{br:g} ms")
+                     + " (strategy cancels/modifies and fill -> stop live)")
+    if getattr(result, "exits_dropped", 0):
+        lines.append(f"Exit legs:      {result.exits_dropped} stop/target order(s) cancelled "
+                     f"because their position was already closed or reversed")
+    for note in getattr(result, "roll_notes", None) or []:
+        lines.append(f"Roll warning:   {note}")
+    if getattr(result, "flatten_at_roll", True) is False:
+        lines.append("Rolls:          flatten-at-roll is OFF: a position held across a "
+                     "contract roll books the calendar spread as P&L")
     if result.halted_on:
         lines.append(f"HALTED on {result.halted_on} (prop breach, halt_on_breach=True)")
     lines.append(f"Runtime:        {result.runtime_s:.1f}s")

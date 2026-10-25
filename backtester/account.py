@@ -1,7 +1,7 @@
 """Position/P&L accounting, round-trip trade recording, prop-firm trailing threshold."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -118,6 +118,44 @@ class TradeRecorder:
         if self.open is not None:
             self.open.mae = min(self.open.mae, unreal_min)
             self.open.mfe = max(self.open.mfe, unreal_max)
+
+
+class DrawdownTracker:
+    """Peak-to-trough drawdown of account equity at tick resolution.
+
+    The broker feeds it every equity value it computes: each event of a
+    constant-position segment (balance + unrealized, marked on the trade
+    price, the same series the prop tracker sees), the balance while flat, and
+    the equity right after every fill (so exit commission and slippage count).
+    A bar-close equity curve misses any dip that recovers inside the bar.
+    """
+
+    def __init__(self, start_balance: float):
+        self.peak = float(start_balance)
+        self.max_dd = 0.0          # dollars, <= 0
+        self.max_dd_pct = 0.0      # percent of the running peak, <= 0
+
+    def update_scalar(self, equity: float) -> None:
+        if equity > self.peak:
+            self.peak = equity
+            return
+        dd = equity - self.peak
+        if dd < self.max_dd:
+            self.max_dd = dd
+        if self.peak > 0 and dd / self.peak * 100 < self.max_dd_pct:
+            self.max_dd_pct = dd / self.peak * 100
+
+    def update_series(self, equity: np.ndarray) -> None:
+        if len(equity) == 0:
+            return
+        peak_run = np.maximum.accumulate(np.maximum(equity, self.peak))
+        dd = equity - peak_run
+        self.max_dd = min(self.max_dd, float(dd.min()))
+        pos = peak_run > 0
+        if pos.any():
+            self.max_dd_pct = min(self.max_dd_pct,
+                                  float((dd[pos] / peak_run[pos]).min() * 100))
+        self.peak = float(peak_run[-1])
 
 
 @dataclass

@@ -44,6 +44,9 @@ SPECS: dict[str, ContractSpec] = {
     # SI commission is ASSUMED equal to GC (same COMEX metals fee class): confirm it
     # against your broker's schedule and override it if it differs.
     "SI":  ContractSpec("SI",  0.005, 5000.0, 3.54, "Silver"),
+    # ZN trades in 1/64 point (0.015625, $15.625/tick, exact in binary). The commission is
+    # ASSUMED equal to the equity minis ($3.10): confirm it against your broker's schedule.
+    "ZN":  ContractSpec("ZN",  0.015625, 1000.0, 3.10, "10-Year T-Note"),
     "MES": ContractSpec("MES", 0.25,  5.0,   1.04, "Micro E-mini S&P 500", is_micro=True),
     "MNQ": ContractSpec("MNQ", 0.25,  2.0,   1.04, "Micro E-mini Nasdaq-100", is_micro=True),
     "MYM": ContractSpec("MYM", 1.00,  0.5,   1.04, "Micro E-mini Dow", is_micro=True),

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import manifest
 from . import metrics as metrics_mod
 from . import sweep as sweep_mod
 from .account import PropFirmConfig
@@ -36,6 +37,7 @@ class Window:
     oos_metric: float = float("nan")
     oos_stats: dict = field(default_factory=dict)
     oos_daily: dict = field(default_factory=dict)
+    oos_trial: int | None = None
 
 
 def split_windows(days: list[str], n_windows: int, ratio: int) -> list[Window]:
@@ -64,7 +66,8 @@ def run_walkforward(strategy_path: str, param_grid: dict[str, list],
                     slippage_ticks: float = 0.0,
                     daily_loss_limit: float | None = None,
                     workers: int | None = None,
-                    data_root=None, cache_root=None) -> list[Window]:
+                    data_root=None, cache_root=None,
+                    manifest_path=None) -> list[Window]:
     strat0 = load_strategy(strategy_path)
     sym = (symbol or strat0.symbol).upper()
     catalog = Catalog(data_root, cache_root)
@@ -82,7 +85,7 @@ def run_walkforward(strategy_path: str, param_grid: dict[str, list],
             start=w.is_days[0], end=w.is_days[-1], symbol=sym, period=period,
             start_balance=start_balance, prop_threshold=prop_threshold,
             slippage_ticks=slippage_ticks, daily_loss_limit=daily_loss_limit,
-            workers=workers)
+            workers=workers, kind="walkforward", write_manifest=False)
         ranked = sweep_mod.rank(rows, metric, min_trades)
         best = ranked[0]
         w.best_params = {k: best[k] for k in param_grid}
@@ -95,14 +98,52 @@ def run_walkforward(strategy_path: str, param_grid: dict[str, list],
                       prop=prop, slippage_ticks=slippage_ticks,
                       daily_loss_limit=daily_loss_limit, progress=False,
                       data_root=data_root, cache_root=cache_root)
+        rec = manifest.begin_run(bt, kind="walkforward")   # BEFORE the run
         res = bt.run()
         w.oos_stats = metrics_mod.compute(res)
+        m = manifest.finish_run(rec, res, w.oos_stats, write_manifest=False)
+        w.oos_trial = m["trial"] if m else None
         w.oos_daily = res.daily_pnl
         w.oos_metric = w.oos_stats.get(metric, float("nan"))
         print(f"  best {w.best_params}: IS {metric} {w.is_metric:.2f} -> "
               f"OOS {metric} {w.oos_metric:.2f}, "
               f"OOS net ${w.oos_stats['net_pnl']:,.0f}")
+    try:
+        inputs = manifest.raw_fingerprint(catalog, sym, start, end)
+    except Exception as e:
+        inputs = {"raw_sha": None, "note": f"unavailable: {e}"[:200]}
+    out = manifest.write_study_manifest(
+        manifest_path, "walkforward",
+        {"strategy": str(strategy_path), "grid": param_grid, "n_windows": n_windows,
+         "ratio": ratio, "metric": metric, "min_trades": min_trades, "start": start,
+         "end": end, "symbol": sym, "period": period, "start_balance": start_balance,
+         "prop_threshold": prop_threshold, "slippage_ticks": slippage_ticks,
+         "daily_loss_limit": daily_loss_limit},
+        inputs,
+        [{"window": w.index, "is": [w.is_days[0], w.is_days[-1]],
+          "oos": [w.oos_days[0], w.oos_days[-1]], "best_params": w.best_params,
+          "is_metric": w.is_metric, "oos_metric": w.oos_metric,
+          "oos_net_pnl": w.oos_stats.get("net_pnl"),
+          "oos_trades": w.oos_stats.get("total_trades"),
+          "oos_trial": w.oos_trial} for w in windows])
+    if out:
+        print(f"\nManifest: {out.resolve()}")
     return windows
+
+
+def stitch_daily(windows: list[Window]) -> dict[str, float]:
+    """Combined out-of-sample daily P&L, keyed by CME trading date.
+
+    Two windows can carry the SAME key: a window cut mid-week splits one
+    trading day (18:00 ET -> 17:00 ET, named by the date it ends on). The
+    earlier window books that day's evening part, the later one its morning
+    part, so the days must be SUMMED. dict.update() would silently keep only
+    the later half and drop the other half of the P&L."""
+    out: dict[str, float] = {}
+    for w in windows:
+        for day, pnl in w.oos_daily.items():
+            out[day] = out.get(day, 0.0) + pnl
+    return out
 
 
 def summarize(windows: list[Window], metric: str,
@@ -117,9 +158,7 @@ def summarize(windows: list[Window], metric: str,
             f"{w.oos_stats['total_trades']:>12}  {w.best_params}")
 
     # stitched OOS: combined daily P&L across all OOS segments
-    all_daily: dict[str, float] = {}
-    for w in windows:
-        all_daily.update(w.oos_daily)
+    all_daily = stitch_daily(windows)
     dvals = np.array(list(all_daily.values()))
     net = float(dvals.sum()) if len(dvals) else 0.0
     sharpe = float("nan")
@@ -127,7 +166,7 @@ def summarize(windows: list[Window], metric: str,
         ret = dvals / start_balance
         sharpe = float(ret.mean() / ret.std(ddof=1) * np.sqrt(252))
     lines.append(f"\nStitched OOS: net ${net:,.0f} over {len(dvals)} days, "
-                 f"Sharpe {sharpe:.2f}")
+                 f"Sharpe {'n/a' if sharpe != sharpe else f'{sharpe:.2f}'}")
 
     is_vals = [w.is_metric for w in windows if w.is_metric == w.is_metric]
     oos_vals = [w.oos_metric for w in windows if w.oos_metric == w.oos_metric]

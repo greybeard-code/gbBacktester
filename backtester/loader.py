@@ -25,11 +25,20 @@ def load_strategy_class(path: str | Path) -> type[Strategy]:
     return classes[0]
 
 
+# Settings the ENGINE reads from the strategy with a default (Backtest resolves
+# arg > strategy attribute > default), so a sweep / walk-forward / --param can
+# set them on any strategy without the class declaring them.
+ENGINE_PARAMS = frozenset({"latency_ms", "cancel_latency_ms", "modify_latency_ms",
+                           "bracket_latency_ms", "daily_limit_mode",
+                           "daily_loss_limit", "daily_profit_target",
+                           "flatten_at_roll", "roll_entry_block_minutes"})
+
+
 def load_strategy(path: str | Path, overrides: dict | None = None) -> Strategy:
     cls = load_strategy_class(path)
     strat = cls()
     for k, v in (overrides or {}).items():
-        if not hasattr(strat, k):
+        if not hasattr(strat, k) and k not in ENGINE_PARAMS:
             raise AttributeError(
                 f"{cls.__name__} has no parameter {k!r} — check --param names")
         setattr(strat, k, v)

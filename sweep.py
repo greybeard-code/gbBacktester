@@ -61,6 +61,7 @@ def main() -> None:
     args = ap.parse_args()
 
     grid = parse_params(args.param)
+    name = load_strategy_class(args.strategy).__name__
     n = 1
     for v in grid.values():
         n *= len(v)
@@ -71,7 +72,8 @@ def main() -> None:
         symbol=args.symbol, period=args.period, start_balance=args.balance,
         prop_threshold=args.prop_threshold if args.prop_threshold > 0 else None,
         slippage_ticks=args.slippage, daily_loss_limit=args.daily_loss_limit,
-        workers=args.workers)
+        workers=args.workers,
+        manifest_path=Path("reports") / f"sweep_{name}_manifest.json")
 
     ranked = sw.rank(rows, args.metric, args.min_trades)
     params = list(grid)
@@ -92,7 +94,6 @@ def main() -> None:
     print(sw.format_sensitivity(sw.sensitivity(rows, best, grid, args.metric),
                                 args.metric))
 
-    name = load_strategy_class(args.strategy).__name__
     out = sw.write_csv(ranked, Path("reports") / f"sweep_{name}.csv")
     print(f"\nFull results: {out.resolve()}")
 

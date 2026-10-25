@@ -103,6 +103,13 @@ class Order:
     plan: StopPlan | None = None   # dynamic stop schedule (BE/trail)
     fill_price: float = float("nan")
     fill_ts: int = 0
+    # latency model: the order reaches the exchange at this time (ns UTC) and
+    # cannot trigger or fill on an earlier event. None = no latency (instant).
+    active_ts: int | None = None
+    # a protective stop/target leg created at an entry fill (a bracket child or an ATM
+    # leg): it goes live after the engine's bracket latency (fill -> stop live), see
+    # SimBroker.bracket_ns
+    bracket_leg: bool = False
 
     def __repr__(self) -> str:
         px = "" if self.type is OrderType.MARKET else f" @{self.price}"

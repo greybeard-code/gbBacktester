@@ -14,8 +14,9 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from . import metrics
+from . import manifest, metrics
 from .account import PropFirmConfig
+from .data import Catalog
 from .engine import Backtest
 from .loader import load_strategy
 
@@ -35,10 +36,15 @@ def _run_one(payload: dict) -> dict:
                   slippage_ticks=payload["slippage_ticks"],
                   daily_loss_limit=payload["daily_loss_limit"],
                   progress=False)
-    stats = metrics.compute(bt.run())
+    rec = manifest.begin_run(bt, kind=payload.get("kind", "sweep"),
+                             inputs=payload.get("inputs"))   # BEFORE the run
+    result = bt.run()
+    stats = metrics.compute(result)
     row = dict(payload["overrides"])
     for f in RESULT_FIELDS:
         row[f] = stats.get(f, float("nan"))
+    m = manifest.finish_run(rec, result, stats, write_manifest=False)
+    row["trial"] = m["trial"] if m else None
     return row
 
 
@@ -56,21 +62,40 @@ def run_sweep(strategy_path: str, param_grid: dict[str, list],
               slippage_ticks: float = 0.0,
               daily_loss_limit: float | None = None,
               workers: int | None = None,
+              kind: str = "sweep", manifest_path=None,
+              write_manifest: bool = True,
               _runner=None) -> list[dict]:
-    """Returns one row per combo: {param values..., stats...} (unsorted)."""
-    load_strategy(strategy_path, {k: v[0] for k, v in param_grid.items()})
+    """Returns one row per combo: {param values..., stats..., trial} (unsorted).
+    Every combo appends a ledger line (kind: "sweep", or "walkforward" when
+    called from walk-forward); one study manifest per call unless
+    write_manifest=False."""
+    strat0 = load_strategy(strategy_path, {k: v[0] for k, v in param_grid.items()})
     combos = expand_grid(param_grid)
+    inputs = None
+    if _runner is None:
+        # the raw-data fingerprint is computed ONCE here, not once per worker
+        try:
+            inputs = manifest.raw_fingerprint(
+                Catalog(), (symbol or strat0.symbol).upper(), start, end)
+        except Exception as e:
+            inputs = {"raw_sha": None, "note": f"unavailable: {e}"[:200]}
     payloads = [{
         "strategy_path": str(Path(strategy_path).resolve()),
         "overrides": c, "start": start, "end": end, "symbol": symbol,
         "period": period, "start_balance": start_balance,
         "prop_threshold": prop_threshold, "slippage_ticks": slippage_ticks,
         "daily_loss_limit": daily_loss_limit,
+        "kind": kind, "inputs": inputs,
     } for c in combos]
 
     runner = _runner or _run_one
-    if _runner is not None or len(payloads) == 1:
+    if _runner is not None:
         return [runner(p) for p in payloads]
+    if len(payloads) == 1:
+        rows = [runner(p) for p in payloads]
+        _write_study(rows, strategy_path, param_grid, payloads[0], inputs, kind,
+                     manifest_path, write_manifest)
+        return rows
     workers = workers or min(len(payloads), os.cpu_count() or 4)
     rows = []
     with ProcessPoolExecutor(max_workers=workers) as ex:
@@ -79,7 +104,22 @@ def run_sweep(strategy_path: str, param_grid: dict[str, list],
             print(f"  sweep {i + 1}/{len(payloads)}: "
                   + ", ".join(f"{k}={v}" for k, v in combos[i].items())
                   + f" -> net {row['net_pnl']:,.0f}, sharpe {row['sharpe']:.2f}")
+    _write_study(rows, strategy_path, param_grid, payloads[0], inputs, kind,
+                 manifest_path, write_manifest)
     return rows
+
+
+def _write_study(rows, strategy_path, param_grid, payload, inputs, kind,
+                 manifest_path, write_manifest) -> None:
+    if not write_manifest:
+        return
+    spec = {"strategy": str(strategy_path), "grid": param_grid,
+            **{k: payload[k] for k in ("start", "end", "symbol", "period",
+                                       "start_balance", "prop_threshold",
+                                       "slippage_ticks", "daily_loss_limit")}}
+    out = manifest.write_study_manifest(manifest_path, kind, spec, inputs or {}, rows)
+    if out:
+        print(f"  manifest: {out.resolve()}")
 
 
 def rank(rows: list[dict], metric: str = "sharpe",

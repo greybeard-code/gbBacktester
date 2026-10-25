@@ -4,6 +4,10 @@ reports/
 __pycache__/
 *.pyc
 .pytest_cache/
+.hypothesis/
+.coverage
+# built per installation (python -m tools.roll_calendar build), see data/README.md
+data/roll_calendar.json
 .claude/
 # Market data is licensed and large; never commit it.
 data/*.parquet

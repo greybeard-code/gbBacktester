@@ -10,11 +10,11 @@ import argparse
 from pathlib import Path
 
 from backtester import PropFirmConfig, Backtest
-from backtester import metrics, montecarlo, report
+from backtester import manifest, metrics, montecarlo, report
 from backtester.loader import load_strategy
 
 
-def main() -> None:
+def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Tick-level futures backtester")
     ap.add_argument("strategy", help="path to a .py file with a Strategy subclass")
     ap.add_argument("--symbol", help="override strategy symbol (e.g. MNQ)")
@@ -35,7 +35,54 @@ def main() -> None:
     ap.add_argument("--slippage", type=float, default=0.0,
                     help="extra slippage in ticks on market/stop fills")
     ap.add_argument("--daily-loss-limit", type=float, default=None, metavar="$",
-                    help="flatten and stop trading for the day at this loss")
+                    help="daily loss limit in $ (see --daily-limit-mode)")
+    ap.add_argument("--daily-profit-target", type=float, default=None, metavar="$",
+                    help="daily profit target in $ (see --daily-limit-mode)")
+    ap.add_argument("--daily-limit-mode", choices=("gate", "kill"), default=None,
+                    help="how the daily limits bite. gate (default): REALIZED "
+                         "P&L of closed trades blocks new entries for the rest "
+                         "of the trading day, exits keep working (how most NT8 "
+                         "strategies' own daily limits behave). kill: equity INCLUDING "
+                         "open P&L, tick by tick, flattens and refuses every "
+                         "order (GodZillaKilla). Default: the strategy's own "
+                         "daily_limit_mode, else gate")
+    ap.add_argument("--latency-ms", type=float, default=None, metavar="MS",
+                    help="order latency: a new order (and the stop/target legs "
+                         "made at an entry fill) reaches the exchange this long "
+                         "after it is sent. A strategy's cancels and modifies "
+                         "are instant unless --cancel-latency-ms / --modify-latency-ms "
+                         "are set; forced flattens are never delayed. Default: the strategy's "
+                         "latency_ms, else 100 (live-measured, 2026-10-22); "
+                         "0 turns it off, the optimistic case")
+    ap.add_argument("--cancel-latency-ms", type=float, default=None, metavar="MS",
+                    help="a strategy's cancel reaches the exchange this long after it is "
+                         "sent (the order can still fill meanwhile). One way = half a "
+                         "measured round trip (one weekday, Apex / Tradovate: ~40 evening, ~65 open). "
+                         "Default: the strategy's cancel_latency_ms, else 0 (instant)")
+    ap.add_argument("--modify-latency-ms", type=float, default=None, metavar="MS",
+                    help="a strategy's modify (move_stop, move_target) reaches the exchange "
+                         "this long after it is sent (the old price stays live meanwhile). "
+                         "Measured one way: ~22 evening, ~25 open. Default: the strategy's "
+                         "modify_latency_ms, else 0 (instant)")
+    ap.add_argument("--bracket-latency-ms", type=float, default=None, metavar="MS",
+                    help="a protective stop/target made at an entry fill (a bracket or ATM "
+                         "leg) goes live this long after the FILL: a full round trip, since "
+                         "the fill notice must reach the strategy first (measured ~105 "
+                         "evening, ~182 open). Default: the strategy's bracket_latency_ms, "
+                         "else the order latency")
+    ap.add_argument("--no-roll-flatten", action="store_true",
+                    help="do NOT flatten before contract rolls (the default does: "
+                         "the day files switch contract at a midnight inside the "
+                         "session, and a position carried across it books the "
+                         "calendar spread as P&L). Use to reproduce numbers from "
+                         "before 2026-10-19")
+    ap.add_argument("--roll-block-minutes", type=float, default=None, metavar="MIN",
+                    help="no NEW entries for this many minutes from the first tick on "
+                         "each new contract (after a roll the bars and indicators still "
+                         "see the calendar spread as a move). Default: the strategy's "
+                         "roll_entry_block_minutes, else 0 (off). A sensitivity check: "
+                         "re-run with 120 and see whether the result depends on the "
+                         "post-roll signals")
     ap.add_argument("--news-filter", action="store_true",
                     help="block entries around high-impact (FF red folder) news")
     ap.add_argument("--news-pre", type=float, default=None, metavar="MIN",
@@ -57,7 +104,7 @@ def main() -> None:
                     help="tearsheet path (default reports/<strategy>_<symbol>.html)")
     ap.add_argument("--no-report", action="store_true", help="console output only")
     ap.add_argument("--data-root", default=None)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     strat = load_strategy(args.strategy)
     if args.news_filter:
@@ -82,9 +129,18 @@ def main() -> None:
                   period=args.period, start_balance=args.balance, prop=prop,
                   slippage_ticks=args.slippage,
                   daily_loss_limit=args.daily_loss_limit,
+                  daily_profit_target=args.daily_profit_target,
+                  daily_limit_mode=args.daily_limit_mode,
+                  latency_ms=args.latency_ms,
+                  cancel_latency_ms=args.cancel_latency_ms,
+                  modify_latency_ms=args.modify_latency_ms,
+                  bracket_latency_ms=args.bracket_latency_ms,
+                  flatten_at_roll=False if args.no_roll_flatten else None,
+                  roll_entry_block_minutes=args.roll_block_minutes,
                   data_root=args.data_root)
     print(f"Running {type(strat).__name__} on {bt.symbol}, "
           f"{bt.barspec.key} bars ...")
+    rec = manifest.begin_run(bt, kind="cli")     # config BEFORE the run
     result = bt.run()
     stats = metrics.compute(result)
     print(metrics.format_console(result, stats))
@@ -98,9 +154,22 @@ def main() -> None:
         print()
         print(montecarlo.format_console(mc))
 
+    out = Path(args.out or (Path("reports")
+                            / f"{result.strategy_name}_{result.symbol}.html"))
+    # the manifest goes next to the tearsheet when there is one, else in
+    # the manifest folder (manifest.manifest_dir()): a number with no manifest did not
+    # come from the engine
+    m = manifest.finish_run(
+        rec, result, stats,
+        manifest_path=(out.with_name(out.stem + "_manifest.json")
+                       if (args.out or not args.no_report) else None))
+    if m:
+        print(f"\nManifest:       {Path(m['path']).resolve()}")
+        if m["copy"]:
+            print(f"                (copy next to the tearsheet: {Path(m['copy']).resolve()})")
+        print(f"Ledger:         {m['text']}  [seq {m['seq']}]")
+
     if not args.no_report:
-        out = Path(args.out or (Path("reports")
-                                / f"{result.strategy_name}_{result.symbol}.html"))
         path = report.render(result, stats, out, mc=mc)
         csv_path = report.write_trades_csv(
             result, out.with_name(out.stem + "_trades.csv"))

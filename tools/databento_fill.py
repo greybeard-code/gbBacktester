@@ -89,6 +89,7 @@ MDT_ASK, MDT_BID, MDT_LAST = 0, 1, 2
 QUARTERLY = {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}
 METALS = {"GC", "MGC"}
 SILVER = {"SI"}                       # Mar/May/Jul/Sep/Dec, gold's roll rule (measured 2026-10-10)
+RATES = {"ZN"}                        # Mar/Jun/Sep/Dec, NT8's own roll table (see ZN_ROLL_IN); not in the weekly run
 MAINTAINED = QUARTERLY | METALS | SILVER
 MONTH_CODE = "FGHJKMNQUVXZ"          # Jan..Dec
 
@@ -132,8 +133,52 @@ def nth_business_day_before(d: date, n: int) -> date:
         cur -= timedelta(days=1)
 
 
+# ZN rolls on NT8's own rollover table (MasterInstruments.UserData of NinjaTrader.sqlite on an NT8 machine, read
+# 2026-10-15, 90 records 2005..2027). It is a date list, not a formula: the new contract starts 1 business day
+# before the last business day (LBD) of the month before the old contract's delivery month in 2018-2021, 2-4
+# before in 2021-2025, and ON the LBD from 2026. Checked against the day the new contract's volume overtook the
+# old one in 20 rolls of the FTP per-contract files: exact in 9, within one weekday in 15 (the +3 cases are
+# files that start late, not evidence against the table).
+ZN_ROLL_IN: dict[tuple[int, int], date] = {   # (expiry year, month) -> first day the contract is active
+    (2019, 3): date(2018, 11, 29), (2019, 6): date(2019, 2, 27), (2019, 9): date(2019, 5, 30),
+    (2019, 12): date(2019, 8, 29), (2020, 3): date(2019, 11, 28), (2020, 6): date(2020, 2, 27),
+    (2020, 9): date(2020, 5, 28), (2020, 12): date(2020, 8, 28), (2021, 3): date(2020, 11, 27),
+    (2021, 6): date(2021, 2, 25), (2021, 9): date(2021, 5, 25), (2021, 12): date(2021, 8, 26),
+    (2022, 3): date(2021, 11, 25), (2022, 6): date(2022, 2, 24), (2022, 9): date(2022, 5, 27),
+    (2022, 12): date(2022, 8, 29), (2023, 3): date(2022, 11, 28), (2023, 6): date(2023, 2, 24),
+    (2023, 9): date(2023, 5, 29), (2023, 12): date(2023, 8, 29), (2024, 3): date(2023, 11, 27),
+    (2024, 6): date(2024, 2, 26), (2024, 9): date(2024, 5, 28), (2024, 12): date(2024, 8, 28),
+    (2025, 3): date(2024, 11, 27), (2025, 6): date(2025, 2, 26), (2025, 9): date(2025, 5, 28),
+    (2025, 12): date(2025, 8, 27), (2026, 3): date(2025, 11, 26), (2026, 6): date(2026, 2, 27),
+    (2026, 9): date(2026, 5, 29), (2026, 12): date(2026, 8, 31), (2027, 3): date(2026, 11, 30),
+    (2027, 6): date(2027, 2, 26),
+}
+
+
+def zn_roll_in(y: int, m: int) -> date:
+    """First day ZN contract (y, m) is active. NT8's table where it has the contract; beyond it, the last
+    business day of the month before the previous contract's delivery month (what NT8 does from 2026)."""
+    if (y, m) in ZN_ROLL_IN:
+        return ZN_ROLL_IN[(y, m)]
+    py, pmn = (y, m - 3) if m > 3 else (y - 1, 12)          # previous contract and its delivery month
+    by, bm = (py, pmn - 1) if pmn > 1 else (py - 1, 12)     # the month before that
+    d = date(by + (bm == 12), bm % 12 + 1, 1) - timedelta(days=1)
+    # Memorial Day (the last Monday of May) is the only market holiday that can be the month's last weekday
+    while d.weekday() >= 5 or (d.month == 5 and d.weekday() == 0 and d.day > 24):
+        d -= timedelta(days=1)
+    return d
+
+
 def active_contract(symbol: str, d: date) -> tuple[int, int]:
     """-> (expiry_year, expiry_month) of the front contract covering `d`."""
+    if symbol in RATES:                     # NT8's table: the latest contract whose roll-in is on or before d
+        # A trading day runs 18:00 ET (previous evening) to 17:00 ET, so a Sunday file (evening session only)
+        # belongs to Monday's trading day and takes Monday's contract. Weekday roll eves (Mon-Thu) still hold
+        # two contracts in one calendar-day file (day session old, evening new); that needs an 18:00 splice.
+        if d.weekday() == 6:
+            d = d + timedelta(days=1)
+        cs = [(y, m) for y in range(d.year - 1, d.year + 2) for m in (3, 6, 9, 12) if zn_roll_in(y, m) <= d]
+        return max(cs)
     if symbol in QUARTERLY:
         months, rule = (3, 6, 9, 12), "quarterly"
     elif symbol in METALS:
@@ -179,7 +224,7 @@ def neighbour_symbols(symbol: str, d: date) -> list[str]:
     """The roll-rule contract's previous and next contracts in its cycle. On a
     roll-edge day the recording may hold either, so a splice that doesn't join
     up with the rule's contract tries these."""
-    months = ((3, 6, 9, 12) if symbol in QUARTERLY else
+    months = ((3, 6, 9, 12) if symbol in QUARTERLY | RATES else
               (2, 4, 6, 8, 12) if symbol in METALS else
               (3, 5, 7, 9, 12) if symbol in SILVER else tuple(range(1, 13)))
     y, m = active_contract(symbol, d)

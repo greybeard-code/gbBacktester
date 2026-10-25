@@ -47,6 +47,11 @@ DEFAULT_CACHE_ROOT = Path(os.environ.get(
 
 MDT_ASK, MDT_BID, MDT_LAST = 0, 1, 2
 
+# Parquet metadata key holding the raw file's identity a cache file was built
+# from (see Catalog._raw_identity). Deliberately NOT part of CACHE_VERSION /
+# BARS_VERSION: bumping those would force a full rebuild of every cache file.
+RAW_ID_KEY = b"raw_id"
+
 _DIR_RE = re.compile(r"^(?P<sym>[A-Z0-9]+)-(?P<year>\d{4})_L1$")
 
 _EASTERN = ZoneInfo("America/New_York")
@@ -72,7 +77,12 @@ def _eastern_offset_ns(date: str) -> int:
 CACHE_VERSION = b"4"   # reduced: v4 = crossed quotes (bid > ask) invalidated to
                        # NaN (see _reduce_raw); v3 = trust replay_importer UTC
                        # tag, else ET->UTC
-BARS_VERSION = b"9"    # bars: v9 = follows CACHE_VERSION 4 — OHLC/ts/volume/
+BARS_VERSION = b"10"   # bars: v10 = a bar that straddles a day-file boundary keeps
+                       # the part of itself that printed in the earlier file: renko
+                       # (volume, buy/sell volume, high, low - new carry_state) and
+                       # saber (high/low - the carried seeds were ignored on the normal
+                       # completion path). Only the one bar per boundary that
+                       # completes a carried-in brick changes; v9 = follows CACHE_VERSION 4 — OHLC/ts/volume/
                        # spans are bit-identical (no trade event is dropped),
                        # but the 702 MNQ crossed events stop counting as
                        # aggressor sells, so buy_volume/sell_volume/delta move;
@@ -137,7 +147,9 @@ class BarDay:
     # (open_price, anchor, open_ts, seed_high, seed_low), TBars'
     # (bar_open, bar_max, bar_min, bar_dir, run_high, run_low), each followed
     # by (volume, buy_volume, sell_volume) accumulated so far by that forming
-    # bar. None for every other bar kind (renko uses end_anchor/end_dir above).
+    # bar. Renko ALSO sets it: (volume, buy_volume, sell_volume, high, low) of its
+    # forming brick (high/low None if it has no events yet), next to the
+    # end_anchor/end_dir above. None for the time and tick kinds.
     end_state: tuple | None = None
 
     def __len__(self) -> int:
@@ -216,8 +228,18 @@ class Catalog:
                  cache_root: Path | str | None = None):
         self.data_root = Path(data_root) if data_root else DEFAULT_DATA_ROOT
         self.cache_root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+        self._day_files: dict[str, dict[str, Path]] = {}
 
-    def day_files(self, symbol: str) -> dict[str, Path]:
+    def day_files(self, symbol: str, refresh: bool = False) -> dict[str, Path]:
+        """Memoised per Catalog instance (the scan globs every contract folder,
+        which is slow over sshfs and is now needed on every cache hit for the
+        raw-file identity check). `refresh=True` rescans."""
+        key = symbol.upper()
+        if refresh or key not in self._day_files:
+            self._day_files[key] = self._scan_day_files(symbol)
+        return self._day_files[key]
+
+    def _scan_day_files(self, symbol: str) -> dict[str, Path]:
         """Map YYYYMMDD -> raw parquet path, merged across contract years.
 
         Contract folders (``<SYM>-<YEAR>_L1``) are found both at the data root
@@ -246,6 +268,55 @@ class Catalog:
                 f"No L1 data for {symbol} under {self.data_root}")
         return dict(sorted(out.items()))
 
+    # ---------------- raw-file identity (cache validity) ----------------
+
+    def _raw_identity(self, symbol: str, date: str) -> tuple[bytes, int] | None:
+        """(identity, raw mtime_ns) of the raw Parquet this date is read from,
+        or None when there is no raw file to compare against (cache-only use).
+
+        identity = ``<path relative to data_root>|<size>|<mtime_ns>``. The path
+        is part of it because a date can exist in two contract folders (the
+        year-nested copy wins) and the file chosen can change; any difference
+        at all means the cached reduction may not describe this file.
+        """
+        try:
+            p = self.day_files(symbol).get(date)
+        except FileNotFoundError:
+            return None
+        if p is None:
+            return None
+        try:
+            st = p.stat()
+        except OSError:
+            return None
+        try:
+            rel = p.relative_to(self.data_root).as_posix()
+        except ValueError:
+            rel = str(p)
+        return f"{rel}|{st.st_size}|{st.st_mtime_ns}".encode(), st.st_mtime_ns
+
+    @staticmethod
+    def _cache_fresh(path: Path, meta: dict, raw: tuple[bytes, int] | None) -> bool:
+        """Does this cache file still describe the current raw file?
+
+        Files written since 2026-10-17 carry the raw identity they were built
+        from: stale on ANY difference. Older files carry none (and are not
+        worth a ~11 h rebuild of ~28k files to stamp): they are stale only if
+        the raw file is NEWER than the cache file. That legacy rule's blind
+        spot: a replacement raw file with an older mtime (a restore that
+        preserves timestamps) goes undetected until the cache is rebuilt.
+        """
+        if raw is None:
+            return True
+        ident, raw_mtime_ns = raw
+        stored = meta.get(RAW_ID_KEY)
+        if stored is not None:
+            return stored == ident
+        try:
+            return raw_mtime_ns <= path.stat().st_mtime_ns
+        except OSError:
+            return False
+
     def days(self, symbol: str, start: str | None = None,
              end: str | None = None) -> list[str]:
         """Available YYYYMMDD dates, optionally clipped to [start, end]."""
@@ -262,13 +333,16 @@ class Catalog:
         """Load reduced trade events for one day, building the cache on first
         use. Files from an older schema/version are rebuilt transparently."""
         rp = self._reduced_path(symbol, date)
+        raw = self._raw_identity(symbol, date)   # taken BEFORE reading the raw
         if rp.exists():
             t = pq.read_table(rp)
             meta = t.schema.metadata or {}
             if (set(REDUCED_COLS).issubset(t.column_names)
-                    and meta.get(b"btcache") == CACHE_VERSION):
+                    and meta.get(b"btcache") == CACHE_VERSION
+                    and self._cache_fresh(rp, meta, raw)):
                 return DayL1(date, *(t.column(c).to_numpy()
                                      for c in REDUCED_COLS))
+            del t   # release the read handle before we replace this path
         day = self._reduce_raw(symbol, date)
         rp.parent.mkdir(parents=True, exist_ok=True)
         tmp = rp.with_suffix(f".{os.getpid()}.tmp")   # unique per process
@@ -276,7 +350,9 @@ class Catalog:
             "ts": day.ts, "price": day.price, "volume": day.volume,
             "ask": day.ask, "bid": day.bid, "ask_size": day.ask_size,
             "bid_size": day.bid_size, "aggr": day.aggr,
-        }).replace_schema_metadata({b"btcache": CACHE_VERSION}),
+        }).replace_schema_metadata(
+            {b"btcache": CACHE_VERSION,
+             **({RAW_ID_KEY: raw[0]} if raw else {})}),
             tmp, compression="zstd")
         os.replace(tmp, rp)
         return day
@@ -333,11 +409,16 @@ class Catalog:
     def load_bars(self, symbol: str, date: str, spec, tick_size: float,
                   day: DayL1 | None = None) -> BarDay:
         bp = self._bars_path(symbol, date, spec.key)
+        # Validate against the RAW file, not the reduced cache: a bar cache hit
+        # returns before load_day ever runs, and bars whose [i0, i1) spans index
+        # a different tick array than the one now served are worse than stale.
+        raw = self._raw_identity(symbol, date)
         if bp.exists():
             t = pq.read_table(bp)
             meta = t.schema.metadata or {}
             if (set(BAR_COLS).issubset(t.column_names)
-                    and meta.get(b"btcache") == BARS_VERSION):
+                    and meta.get(b"btcache") == BARS_VERSION
+                    and self._cache_fresh(bp, meta, raw)):
                 return BarDay(*(t.column(c).to_numpy() for c in BAR_COLS))
             del t   # release the read handle before we replace this path
         if day is None:
@@ -346,7 +427,9 @@ class Catalog:
         bp.parent.mkdir(parents=True, exist_ok=True)
         tmp = bp.with_suffix(f".{os.getpid()}.tmp")
         pq.write_table(pa.table({c: getattr(bars, c) for c in BAR_COLS})
-                       .replace_schema_metadata({b"btcache": BARS_VERSION}),
+                       .replace_schema_metadata(
+                           {b"btcache": BARS_VERSION,
+                            **({RAW_ID_KEY: raw[0]} if raw else {})}),
                        tmp, compression="zstd")
         _atomic_replace(tmp, bp)
         return bars
@@ -402,6 +485,7 @@ class Catalog:
         out: list[BarDay] = []
         carry_anchor: float | None = None
         carry_dir = 0
+        carry_state: tuple | None = None
         prev_last_ts: int | None = None
         for i, date in enumerate(dates):
             day = days[i] if days is not None else self.load_day(symbol, date)
@@ -410,9 +494,10 @@ class Catalog:
                 continue
             if (prev_last_ts is not None
                     and int(day.ts[0]) - prev_last_ts > RENKO_RESET_GAP_NS):
-                carry_anchor, carry_dir = None, 0
-            bars, carry_anchor, carry_dir = self._load_renko_cached(
-                symbol, date, spec, tick_size, day, carry_anchor, carry_dir)
+                carry_anchor, carry_dir, carry_state = None, 0, None
+            bars, carry_anchor, carry_dir, carry_state = self._load_renko_cached(
+                symbol, date, spec, tick_size, day, carry_anchor, carry_dir,
+                carry_state)
             out.append(bars)
             prev_last_ts = int(day.ts[-1])
         return out
@@ -445,8 +530,9 @@ class Catalog:
 
     def _load_renko_cached(self, symbol: str, date: str, spec,
                            tick_size: float, day: DayL1,
-                           carry_anchor: float | None, carry_dir: int
-                           ) -> tuple[BarDay, float, int]:
+                           carry_anchor: float | None, carry_dir: int,
+                           carry_state: tuple | None = None
+                           ) -> tuple[BarDay, float, int, tuple]:
         """load_bars_sequence's per-day cache lookup/build for renko specs.
 
         The cache key is (symbol, spec.key, date) same as `load_bars`, but a
@@ -456,23 +542,29 @@ class Catalog:
         started elsewhere) and must be rebuilt.
         """
         bp = self._bars_path(symbol, date, spec.key)
+        raw = self._raw_identity(symbol, date)
         want_a = (b"None" if carry_anchor is None
                  else repr(float(carry_anchor)).encode())
         want_d = str(carry_dir).encode()
+        want_s = json.dumps(carry_state).encode()      # None -> b"null"
         if bp.exists():
             t = pq.read_table(bp)
             meta = t.schema.metadata or {}
             if (set(BAR_COLS).issubset(t.column_names)
                     and meta.get(b"btcache") == BARS_VERSION
                     and meta.get(b"carry_anchor") == want_a
-                    and meta.get(b"carry_dir") == want_d):
+                    and meta.get(b"carry_dir") == want_d
+                    and meta.get(b"carry_state") == want_s
+                    and self._cache_fresh(bp, meta, raw)):
                 bars = BarDay(*(t.column(c).to_numpy() for c in BAR_COLS))
                 return (bars, float(meta[b"end_anchor"]),
-                        int(meta[b"end_dir"]))
+                        int(meta[b"end_dir"]),
+                        tuple(json.loads(meta[b"end_state"])))
             del t   # release the read handle before we replace this path
         bars = build_renko_bars(day, spec.brick_ticks * tick_size,
                                 spec.trend_ticks * tick_size,
-                                carry_anchor=carry_anchor, carry_dir=carry_dir)
+                                carry_anchor=carry_anchor, carry_dir=carry_dir,
+                                carry_state=carry_state)
         bp.parent.mkdir(parents=True, exist_ok=True)
         tmp = bp.with_suffix(f".{os.getpid()}.tmp")
         pq.write_table(pa.table({c: getattr(bars, c) for c in BAR_COLS})
@@ -480,11 +572,14 @@ class Catalog:
                            b"btcache": BARS_VERSION,
                            b"carry_anchor": want_a,
                            b"carry_dir": want_d,
+                           b"carry_state": want_s,
                            b"end_anchor": repr(float(bars.end_anchor)).encode(),
                            b"end_dir": str(bars.end_dir).encode(),
+                           b"end_state": json.dumps(bars.end_state).encode(),
+                           **({RAW_ID_KEY: raw[0]} if raw else {}),
                        }), tmp, compression="zstd")
         _atomic_replace(tmp, bp)
-        return bars, float(bars.end_anchor), int(bars.end_dir)
+        return bars, float(bars.end_anchor), int(bars.end_dir), bars.end_state
 
     def _load_carry_cached(self, symbol: str, date: str, spec,
                            day: DayL1, carry: tuple | None,
@@ -500,13 +595,15 @@ class Catalog:
         (anchor, dir) it has no fixed small arity worth hand-unpacking.
         """
         bp = self._bars_path(symbol, date, spec.key)
+        raw = self._raw_identity(symbol, date)
         want_c = json.dumps(carry).encode()
         if bp.exists():
             t = pq.read_table(bp)
             meta = t.schema.metadata or {}
             if (set(BAR_COLS).issubset(t.column_names)
                     and meta.get(b"btcache") == BARS_VERSION
-                    and meta.get(b"carry_in") == want_c):
+                    and meta.get(b"carry_in") == want_c
+                    and self._cache_fresh(bp, meta, raw)):
                 bars = BarDay(*(t.column(c).to_numpy() for c in BAR_COLS))
                 return bars, tuple(json.loads(meta[b"end_state"]))
             del t   # release the read handle before we replace this path
@@ -518,6 +615,7 @@ class Catalog:
                            b"btcache": BARS_VERSION,
                            b"carry_in": want_c,
                            b"end_state": json.dumps(bars.end_state).encode(),
+                           **({RAW_ID_KEY: raw[0]} if raw else {}),
                        }), tmp, compression="zstd")
         _atomic_replace(tmp, bp)
         return bars, bars.end_state
@@ -616,7 +714,8 @@ RENKO_RESET_GAP_NS = 30 * 60 * 1_000_000_000   # trade gap that resets the ancho
 
 def build_renko_bars(day: DayL1, brick: float, trend: float,
                      carry_anchor: float | None = None,
-                     carry_dir: int = 0) -> BarDay:
+                     carry_dir: int = 0,
+                     carry_state: tuple | None = None) -> BarDay:
     """ninZaRenko bars, per the published trader manual.
 
     Parameters (price units here; ticks at the BarSpec level):
@@ -652,6 +751,15 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
     against RENKO_RESET_GAP_NS — this function has no visibility into the
     previous day's data to make that call itself.
 
+    `carry_state` = `(volume, buy_volume, sell_volume, high, low)` of the
+    forming brick's events in the PRIOR file (`high`/`low` None if it had none),
+    as returned in `BarDay.end_state`. The first bar emitted here is that brick,
+    so it gets the carried volume added and its high/low widened by the carried
+    extremes - without it a brick straddling a file boundary loses everything
+    that printed before midnight ET. A reset gap abandons a forming brick (no
+    bar, a hole in the spans) and with it the carried state, whether or not it
+    had been used yet. `None` (the default) is the old behavior.
+
     NOTE: signal timing on these bars is realistic; the engine still fills
     orders on real ticks, so none of NT8's Renko fantasy-fill problem applies.
     """
@@ -675,6 +783,7 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
     anchor = prices[0] if carry_anchor is None else carry_anchor
     d = carry_dir            # current trend: +1 / -1 / 0 (no bar yet)
     span_start = 0          # first tick index of the bar being built
+    pend = carry_state      # prior file's part of the forming brick, until emitted
 
     def emit(close: float, direction: int, k: int,
              body: float | None = None, partial: bool = False) -> None:
@@ -685,18 +794,26 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         # the completing bar's H/L, volume and fill span all stop before k.
         # A `partial` close (session halt / EOD) has no breakout tick: its k
         # IS the last real trade and its close price, so include it.
-        nonlocal anchor, span_start, d
+        nonlocal anchor, span_start, d, pend
         i0 = span_start
         i1 = k + 1 if partial else k
         seg = prices[i0:i1] if i1 > i0 else None
         o = close - direction * (brick if body is None else body)
+        hi = seg.max() if seg is not None else close
+        lo = seg.min() if seg is not None else close
+        cv = cb = cs = 0
+        if pend is not None:              # the first bar here IS the carried brick
+            cv, cb, cs, phi, plo = pend
+            if phi is not None:
+                hi, lo = max(hi, phi), min(lo, plo)
+            pend = None
         opens.append(o)
         closes.append(close)
-        highs.append(max(seg.max() if seg is not None else close, o, close))
-        lows.append(min(seg.min() if seg is not None else close, o, close))
-        vols.append(int(day.volume[i0:i1].sum()) if i1 > i0 else 0)
-        bvols.append(int(buy[i0:i1].sum()) if i1 > i0 else 0)
-        svols.append(int(sell[i0:i1].sum()) if i1 > i0 else 0)
+        highs.append(max(hi, o, close))
+        lows.append(min(lo, o, close))
+        vols.append(cv + (int(day.volume[i0:i1].sum()) if i1 > i0 else 0))
+        bvols.append(cb + (int(buy[i0:i1].sum()) if i1 > i0 else 0))
+        svols.append(cs + (int(sell[i0:i1].sum()) if i1 > i0 else 0))
         ts_end.append(int(day.ts[k]))
         i0s.append(i0)
         i1s.append(i1)
@@ -721,6 +838,7 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
             anchor = p
             d = 0
             span_start = k
+            pend = None     # an abandoned brick takes its carried part with it
         # Breakouts are STRICT (`>` / `<`), matching ninZaRenko.cs
         # (`breakUp = close > upperLimit`): a close *exactly at* a threshold
         # updates the forming bar but does not emit a brick — price must
@@ -747,6 +865,21 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         while d > 0 and p > anchor + trend:          # ups after an up-reversal
             emit(anchor + trend, 1, k)
 
+    # the brick still forming at the end of the data: its events so far (plus the
+    # part carried in, if it has not completed in this file) go out with it
+    tail = span_start < n
+    t_vol = int(day.volume[span_start:n].sum()) if tail else 0
+    t_buy = int(buy[span_start:n].sum()) if tail else 0
+    t_sell = int(sell[span_start:n].sum()) if tail else 0
+    t_hi = float(prices[span_start:n].max()) if tail else None
+    t_lo = float(prices[span_start:n].min()) if tail else None
+    if pend is not None:
+        cv, cb, cs, phi, plo = pend
+        t_vol, t_buy, t_sell = t_vol + cv, t_buy + cb, t_sell + cs
+        if phi is not None:
+            t_hi = phi if t_hi is None else max(t_hi, phi)
+            t_lo = plo if t_lo is None else min(t_lo, plo)
+
     return BarDay(
         np.asarray(ts_end, dtype="int64"),
         np.asarray(opens, dtype="float64"),
@@ -760,6 +893,7 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         np.asarray(i1s, dtype="int64"),
         end_anchor=anchor,
         end_dir=d,
+        end_state=(t_vol, t_buy, t_sell, t_hi, t_lo),
     )
 
 
@@ -907,8 +1041,12 @@ def build_saber_bars(day: DayL1, bar_ticks: int, offset_ticks: int,
             # anchor-triple parity was 96-97% across two independent chart
             # exports (64/16 and 100/25), residual explained by feed skew
             # (same class of noise already documented for ninZaRenko).
-            real_hi = float(prices[i0:k + 1].max()) if k + 1 > i0 else open_price
-            real_lo = float(prices[i0:k + 1].min()) if k + 1 > i0 else open_price
+            # ...and with the carried-in extremes (seed_hi/seed_lo): a bar that
+            # straddles a day-file boundary has ticks this file cannot see. Inside
+            # one call the seeds are already contained in this union (they are
+            # {new open, completing tick}), so a fresh build is unchanged.
+            real_hi = max(seed_hi, float(prices[i0:k + 1].max())) if k + 1 > i0 else max(seed_hi, open_price)
+            real_lo = min(seed_lo, float(prices[i0:k + 1].min())) if k + 1 > i0 else min(seed_lo, open_price)
             hi = max(open_price, newc, anchor, real_hi)
             lo = min(open_price, newc, anchor, real_lo)
             opens.append(open_price); highs.append(hi); lows.append(lo)
