@@ -33,12 +33,13 @@ What it found:
 - **So** if slippage should vary, key it to the session and to recent volatility. Calendar month and
   weekday add little.
 
-**Heatmaps:** [results/trends.html](results/trends.html) is an interactive page: spread by time of
-day, month and weekday for all 14 symbols, plus month-by-time and weekday-by-time views with a
-symbol picker. GitHub shows HTML files as source, not as a page, so download the file and open it in
-a browser. It is small (about 0.4 MB) because it loads plotly.js from cdn.plot.ly, so it needs an
+**Heatmaps:** [the interactive page](https://greybeard-code.github.io/gbBacktester/slippage_study/results/trends.html)
+shows spread by time of day, month and weekday for all 14 symbols, plus month-by-time and
+weekday-by-time views with a symbol picker. It is served by GitHub Pages from
+[results/trends.html](results/trends.html) (GitHub's file viewer shows that file as source, not as a
+page). It is small (about 0.4 MB) because it loads plotly.js from cdn.plot.ly, so it needs an
 internet connection; `python slippage_study/trends.py --offline` builds a self-contained copy (about
-5 MB, too big for GitHub to display) in `out/`.
+5 MB) in `out/`.
 
 ## Recommended slippage for last-price backtesters (NT8 Strategy Analyzer and similar)
 
