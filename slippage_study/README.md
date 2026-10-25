@@ -33,10 +33,12 @@ What it found:
 - **So** if slippage should vary, key it to the session and to recent volatility. Calendar month and
   weekday add little.
 
-**Heatmaps:** [results/trends.html](results/trends.html) is a self-contained interactive page
-(plotly, works offline): spread by time of day, month and weekday for all 14 symbols, plus
-month-by-time and weekday-by-time views with a symbol picker. GitHub shows HTML files as source, so
-download it and open it in a browser. Regenerate it with `trends.py` (below).
+**Heatmaps:** [results/trends.html](results/trends.html) is an interactive page: spread by time of
+day, month and weekday for all 14 symbols, plus month-by-time and weekday-by-time views with a
+symbol picker. GitHub shows HTML files as source, not as a page, so download the file and open it in
+a browser. It is small (about 0.4 MB) because it loads plotly.js from cdn.plot.ly, so it needs an
+internet connection; `python slippage_study/trends.py --offline` builds a self-contained copy (about
+5 MB, too big for GitHub to display) in `out/`.
 
 ## Recommended slippage for last-price backtesters (NT8 Strategy Analyzer and similar)
 
@@ -131,7 +133,7 @@ job. The full run took about 25 minutes with one worker.
 - `summarize.py`: pools the per-day files into the summary, monthly and coverage tables.
 - `recommend.py`: turns the pooled histograms into per-session slippage ticks.
 - `trends.py`: the time-of-day, month and weekday heatmaps (`out/trends.html`) and `trend_stats.csv`.
-  `results/trends.html` is a copy of that page from the 2026 run.
+  `results/trends.html` is a copy of that page from the 2026 run (`--offline` embeds plotly.js).
 - `results/`: the pooled outputs of the 2026 run (`slippage_recommendations_2026.csv`,
   `spread_30m_summary_2026.csv`, `coverage_2026.csv`, `trends.html`). The per-day tables are large and are rebuilt
   by the commands above (`out/` is gitignored).

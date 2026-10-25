@@ -1,7 +1,9 @@
 """Trend analysis of the 30-minute spread table: time of day, month, weekday.
 
-Reads out/spread_30m_by_day_2026.parquet. Writes out/trends.html (self-contained plotly page,
-derived from the tick data, so check its licence before sharing) and out/trend_stats.csv. Prints the numbers behind the page.
+Reads out/spread_30m_by_day_2026.parquet. Writes out/trends.html and out/trend_stats.csv, and prints
+the numbers behind the page. The page loads plotly.js from cdn.plot.ly (about 0.4 MB, small enough for
+GitHub to show); `--offline` embeds plotly.js instead (about 5 MB, works without internet). The page is
+derived from the tick data, so check its licence before sharing it.
 
 Measure: trade-weighted mean spread in ticks of each day-window (windows with < 30 valid trades
 are dropped). Month and weekday cuts use a WINDOW-ADJUSTED index: each day-window's spread
@@ -86,7 +88,7 @@ def heat(z_ratio, x, y, text=None, hover=None, title="", height=None):
     return fig
 
 
-def main():
+def main(offline: bool = False):
     d = load()
     syms = [s for s in SYM_ORDER if s in set(d["symbol"].tolist())]
     stats = []
@@ -192,7 +194,7 @@ def main():
              '<p>Pooled statistics from 2026 L1 tick data: trade-weighted mean spread in ticks, 14 futures symbols. Hover a cell for the value.</p>']
     for i, (h, note, fig) in enumerate(figs):
         parts.append(f"<h2>{h}</h2><p>{note}</p>")
-        parts.append(fig.to_html(full_html=False, include_plotlyjs="inline" if i == 0 else False))
+        parts.append(fig.to_html(full_html=False, include_plotlyjs=("inline" if offline else "cdn") if i == 0 else False))
     parts.append("</body></html>")
     (OUT / "trends.html").write_text("\n".join(parts))
     with open(OUT / "trend_stats.csv", "w", newline="") as f:
@@ -214,4 +216,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--offline", action="store_true",
+                    help="embed plotly.js (about 4.6 MB larger) instead of loading it from cdn.plot.ly")
+    main(ap.parse_args().offline)
