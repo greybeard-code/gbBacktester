@@ -363,6 +363,18 @@ entries for N minutes after each roll, which shows whether a result depends on
 signals fired by the spread. Index futures, gold and silver are covered; CL and
 MCL are not.
 
+## Slippage study (for other backtesters)
+
+**gbBacktester does not need slippage to account for the spread**: a market order already fills at
+the opposite quote, so the spread is paid on every market fill (the Fill model above). Leave
+`--slippage` at 0 unless you want an extra stress.
+
+**NinjaTrader 8's Strategy Analyzer and other bar- or last-price backtesters do need it**, because
+they fill at the last or bar price and pay no spread. [slippage_study/](slippage_study/README.md)
+measures the bid/ask spread per 30-minute window from 2026 tick data (14 futures symbols) and turns
+it into per-symbol slippage ticks for those tools, split by session: the 18:00 ET reopen is the
+widest window for nearly every symbol, and month-to-month spread follows volatility.
+
 ## Prop-firm simulation
 
 The trailing threshold (modeled on Apex's real rule set) trails the
