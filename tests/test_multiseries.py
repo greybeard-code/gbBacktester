@@ -1,32 +1,12 @@
 """Secondary (multi-timeframe) series + on_tick hook."""
 import pytest
 
-from backtester.data import build_time_bars
 from backtester.engine import Backtest
 from backtester.orders import BUY, Order, OrderType
 from backtester.strategy import Strategy
 
-from conftest import make_day
+from conftest import MultiDayCatalog, make_day
 
-
-class _StubCatalog:
-    def __init__(self, day):
-        self._day = day
-
-    def days(self, symbol, start=None, end=None):
-        return [self._day.date]
-
-    def load_day(self, symbol, date):
-        return self._day
-
-    def load_bars(self, symbol, date, spec, tick_size, day=None):
-        return build_time_bars(self._day, spec.seconds)
-
-    def load_bars_sequence(self, symbol, dates, spec, tick_size, days=None):
-        return [self.load_bars(symbol, d, spec, tick_size) for d in dates]
-
-
-# ---------------- secondary series ----------------
 
 class _MTF(Strategy):
     symbol = "MNQ"
@@ -54,7 +34,7 @@ def test_secondary_no_lookahead_and_fires():
     day = make_day([100.0 + 0.01 * i for i in range(300)])
     strat = _MTF()
     bt = Backtest(strat, prop=None, progress=False)
-    bt.catalog = _StubCatalog(day)
+    bt.catalog = MultiDayCatalog([day])
     res = bt.run()
     assert strat.violations == 0                 # never sees a future 5s bar
     assert strat.sec_fires > 0
@@ -70,7 +50,7 @@ def test_no_secondary_by_default_is_untouched():
             pass
     day = make_day([100.0] * 120)
     bt = Backtest(Plain(), prop=None, progress=False)
-    bt.catalog = _StubCatalog(day)
+    bt.catalog = MultiDayCatalog([day])
     res = bt.run()
     assert res.trades == []
 
@@ -138,7 +118,7 @@ def test_engine_drives_on_tick():
     day = make_day([100.0] * 120)                # 120 one-second events
     s = _TickStrat()
     bt = Backtest(s, prop=None, progress=False)
-    bt.catalog = _StubCatalog(day)
+    bt.catalog = MultiDayCatalog([day])
     bt.run()
     assert s.ticks == 120                        # one on_tick per event
     assert s.last_ts == int(day.ts[-1])          # engine set _now_ts per tick

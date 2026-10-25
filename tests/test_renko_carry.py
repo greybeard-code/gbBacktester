@@ -157,3 +157,74 @@ def test_non_renko_spec_delegates_to_load_bars(tmp_path, monkeypatch):
     monkeypatch.setattr(cat, "load_bars", spy)
     cat.load_bars_sequence("TEST", ["20260101"], spec, 0.25, days=[day1])
     assert calls == ["20260101"]
+
+
+# ---------------- the forming brick's volume and range cross the boundary ----
+
+def _vol_day(ticks, vols, start_ts):
+    """prices 4000 + tick * 0.25, one unit-volume-by-default event a second"""
+    import dataclasses
+    d = make_day([4000.0 + 0.25 * t for t in ticks], start_ts=start_ts)
+    return dataclasses.replace(d, volume=np.asarray(vols, dtype="int64"))
+
+
+SPEC84 = BarSpec("renko", brick_ticks=8, trend_ticks=4)        # brick 2.00, trend 1.00
+
+
+def test_sequence_straddling_brick_keeps_its_volume_and_range(tmp_path):
+    # the hand case from test_bar_invariants: bar 1 = events 5..8 = volume 4,
+    # low 3999.50 (the dip is in the FIRST file), high 4002.00
+    day1 = _vol_day([0, 1, 2, 3, 4, 5, -2], [1] * 7, 1_000_000_000_000)
+    day2 = _vol_day([6, 8, 9], [1] * 3, 1_007_000_000_000)          # no gap between them
+    cat = Catalog(data_root=tmp_path, cache_root=tmp_path / "cache")
+    b1, b2 = cat.load_bars_sequence("TEST", ["20260101", "20260102"], SPEC84, 0.25,
+                                    days=[day1, day2])
+    assert len(b1) == 1 and len(b2) == 1
+    assert b2.volume[0] == 4 and b2.low[0] == 3999.5 and b2.high[0] == 4002.0
+    assert (b2.open[0], b2.close[0]) == (4000.0, 4002.0)
+
+
+def test_a_cache_hit_returns_the_same_bars_and_the_stored_carry_for_the_next_day(tmp_path, monkeypatch):
+    import backtester.data as D
+    day1 = _vol_day([0, 1, 2, 3, 4, 5, -2], [1] * 7, 1_000_000_000_000)
+    day2 = _vol_day([6, 8, 9], [1] * 3, 1_007_000_000_000)
+    day3 = _vol_day([10, 12, 13], [1] * 3, 1_010_000_000_000)      # bar 2 straddles 2 -> 3
+    cat = Catalog(data_root=tmp_path, cache_root=tmp_path / "cache")
+    args = ("TEST", ["20260101", "20260102", "20260103"], SPEC84, 0.25)
+    first = cat.load_bars_sequence(*args, days=[day1, day2, day3])
+    # the second pass must be served from the parquet cache: building is an error
+    monkeypatch.setattr(D, "build_renko_bars", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("rebuilt instead of reading the cache")))
+    second = cat.load_bars_sequence(*args, days=[day1, day2, day3])
+    for a, b in zip(first, second):
+        for f in ("ts_end", "open", "high", "low", "close", "volume", "buy_volume", "sell_volume"):
+            assert np.array_equal(getattr(a, f), getattr(b, f)), f
+    assert [len(b) for b in second] == [1, 1, 1]
+    # day 2's end_state came out of the metadata of a CACHE HIT and fed day 3
+    assert second[2].volume[0] == first[2].volume[0]
+
+
+def test_a_day_cached_under_another_carry_in_state_is_rebuilt(tmp_path):
+    day2 = _vol_day([6, 8, 9], [1] * 3, 1_007_000_000_000)
+    cat = Catalog(data_root=tmp_path, cache_root=tmp_path / "cache")
+    carry_a, carry_b = (2, 0, 0, 4001.25, 3999.5), (10, 0, 0, 4001.25, 3995.0)
+    args = ("TEST", "20260102", SPEC84, 0.25, day2, 4001.0, 1)
+    va = cat._load_renko_cached(*args, carry_a)[0].volume[0]
+    vb = cat._load_renko_cached(*args, carry_b)[0]
+    assert va == 4 and vb.volume[0] == 12 and vb.low[0] == 3995.0     # not the cached A
+    again = cat._load_renko_cached(*args, carry_a)[0]
+    assert again.volume[0] == 4 and again.low[0] == 3999.5            # and back again
+
+
+def test_a_genuine_gap_between_files_drops_the_carried_state(tmp_path):
+    # file 1 leaves a forming brick with 6 volume. File 2 starts 31 minutes later:
+    # a fresh start, so its first bar has NOTHING of file 1 in it
+    day1 = _vol_day([0, 1], [3, 3], 1_000_000_000_000)
+    gap_start = int(day1.ts[-1]) + RENKO_RESET_GAP_NS + 1_000_000_000
+    day2 = _vol_day([0, 5], [7, 11], gap_start)                    # fresh anchor 4000.00
+    cat = Catalog(data_root=tmp_path, cache_root=tmp_path / "cache")
+    b1, b2 = cat.load_bars_sequence("TEST", ["20260101", "20260102"], SPEC84, 0.25,
+                                    days=[day1, day2])
+    assert len(b1) == 0 and len(b2) == 1
+    assert b2.volume[0] == 7                     # not 13
+    assert b2.low[0] == 4000.0 and b2.high[0] == 4001.0
