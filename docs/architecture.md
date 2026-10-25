@@ -34,9 +34,11 @@ tick bars only change *when the strategy is asked to decide*.
 |---|---|
 | `data.py` | `Catalog` finds day files. The first touch of a day reduces ~24M raw L1 events to trade events plus the prevailing bid/ask (the **reduced cache**), then builds per-period **bar caches**. Each bar stores its index span `[i0, i1)` into the reduced arrays. Cached runs cost ~0.05 s/day. Caches live in `.cache/` and are rebuilt when `CACHE_VERSION` / `BARS_VERSION` change. |
 | `engine.py` | Day loop. Sessions are `"HH:MM"` **US/Eastern**. Bars outside the session are skipped, orders are cancelled and positions flattened at session end. Overnight sessions (start > end, e.g. `("18:00", "16:55")`) are split into segments so positions and orders carry across the file boundary. Secondary timeframes (`secondary_periods`) are appended the instant they close. |
-| `broker.py` | Span resolution. Repeatedly finds the earliest-triggering working order in the remaining span (a vectorised search on the trade-price slice), marks equity up to the fill, applies it, and continues from that event. |
+| `broker.py` | Span resolution. Repeatedly finds the earliest-triggering working order in the remaining span (a vectorised search on the trade-price slice), marks equity up to the fill, applies it, and continues from that event. Also the execution-latency model (an order reaches the exchange after `latency_ms`; a strategy's cancels and modifies wait in a queue and take effect at the first tick at or after their arrival; protective legs go live after the bracket latency), the reduce-only rule for exit orders, and the two daily-limit mechanisms. |
 | `orders.py`, `atm.py` | Order types, brackets, OCO legs, and ATM-style multi-bracket exits (scale-out, breakeven, trailing). |
-| `account.py` | `Account` (signed position, average price, realised P&L net of commission), `TradeRecorder` (round trips with MAE/MFE in dollars), `PropFirmTracker` (trailing threshold). |
+| `account.py` | `Account` (signed position, average price, realised P&L net of commission), `TradeRecorder` (round trips with MAE/MFE in dollars), `PropFirmTracker` (trailing threshold), `DrawdownTracker` (tick-level max drawdown). |
+| `rolls.py` | The contract-roll schedule (`data/roll_calendar.json`, built by `tools/roll_calendar.py`) and the pure functions that measure and classify roll jumps. The engine flattens from the schedule, never from a price jump. |
+| `manifest.py` | A manifest per run (versions, data and strategy fingerprints, parameters, costs, results) and the append-only trial ledger. Hooks are explicit calls from the entry points, never inside `Backtest.run`. |
 | `strategy.py` | The `Strategy` base class: `on_start`, `on_bar`, `on_fill`, `on_session_end`, `on_finish`, optional `on_secondary_bar` and `on_tick`, plus order helpers (`buy_bracket`, `move_stop`, ...). |
 | `indicators.py` | Incremental (bar-by-bar) EMA, SMA, ATR, RSI, Highest, Lowest, KAMA and friends, following NinjaTrader's warm-up conventions. |
 | `metrics.py`, `report.py` | Statistics dict, console summary, self-contained HTML tearsheet (Plotly from a CDN) and trades CSV. |
@@ -54,6 +56,14 @@ tick bars only change *when the strategy is asked to decide*.
 - **Stop:** triggers on the last trade price, fills at the quote, and is never
   filled better than the stop price.
 - **Reversals** are split at flat so the trade recorder sees clean round trips.
+- **Latency:** an order sent at time *t* cannot trigger or fill before
+  *t* + `latency_ms`, and is first evaluated (marketable or not) on arrival.
+  The send time of an order placed in `on_bar` is the next bar's first tick: a
+  time bar is stamped with its clock boundary, but the strategy cannot have seen
+  the close before that tick prints.
+- **Exit orders only reduce:** a stop or target that triggers when it cannot
+  reduce the position is cancelled, a fill is clamped to the open position, and a
+  fill that closes or turns the position cancels the exits that no longer apply.
 
 ## Data hygiene built into the reducer
 
@@ -80,4 +90,7 @@ would fabricate breaches.
 
 Tests build synthetic tick streams with `tests/conftest.py::make_day` and
 assert hand-computed fills. Keep that style: it catches real bugs, and a
-fill-model change should come with a test that fails without it.
+fill-model change should come with a test that fails without it. The data-free
+suite runs with the default order latency zeroed (`tests/conftest.py`) so those
+hand-computed fills stay instant; `tests/test_default_latency.py` pins the real
+default.

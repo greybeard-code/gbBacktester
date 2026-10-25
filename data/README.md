@@ -56,3 +56,21 @@ the cadence light and don't redistribute the data.
 > This file is not shipped with the repo. Generate it yourself with
 > `python tools/fetch_ff_news.py --start YYYY-MM-DD --end YYYY-MM-DD` and use it
 > under ForexFactory's terms.
+
+## roll_calendar.json — contract-roll schedule (built per installation)
+
+The dates the raw day files switch from one futures contract to the next, per
+symbol (ES MES NQ MNQ YM MYM RTY M2K GC MGC SI), with the measured jump in ticks
+and percent. The engine cancels orders and flattens before each one
+(`backtester/rolls.py`, setting `flatten_at_roll`), because the contract changes
+at a midnight ET inside the session and a position carried across it would book
+the calendar spread as P&L. The file also lists `unexplained` midnight
+discontinuities outside any roll window (data defects such as a one-day
+wrong-contract file), which the engine warns about and does not flatten on; CL
+and MCL are excluded.
+
+Built from your data, not typed in, and not shipped (it depends on your files):
+`python3 -m tools.roll_calendar build` (a few minutes), verified with
+`... check`, shown with `... show`. Run `build` after each data update; a run
+that goes past a symbol's `through` date gets a warning. `.gitignore` excludes
+the file.

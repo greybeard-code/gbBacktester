@@ -50,22 +50,34 @@ python cli.py strategies/ema_cross.py --start 2026-06-01 --end 2026-06-30 --mc-t
 Output (random-walk data, so there is no edge and the numbers are noise):
 
 ```
+Running EmaCross on MNQ, 60s bars ...
+  [rolls] WARNING: data/roll_calendar.json is missing: positions held across a contract roll book the calendar spread as P&L (python3 -m tools.roll_calendar build)
+
 === EmaCross | MNQ 60s bars | 20260601..20260630 (22 days) ===
-Net P&L:        $104.10   (gross $166.50, commission $62.40)
-Trades:         60   win rate 41.7%   profit factor 1.17
-Avg trade:      $1.73   avg win $29.12   avg loss $-17.83
-Sharpe:         1.50   Sortino: 2.28   Calmar: 6.79
-Max drawdown:   $-175.52 (-0.35%)
+Net P&L:        $103.60   (gross $166.00, commission $62.40)
+Trades:         60   win rate 43.3%   profit factor 1.17
+Avg trade:      $1.73   avg win $27.98   avg loss $-18.35
+Sharpe:         1.49   Sortino: 2.27   Calmar: 6.70
+Max drawdown:   $-177.02 (-0.35%)
 Days:           +11 / -11   best $99.88   worst $-105.20
-Duration:       median 6044s   min 59s   <10s: 0 trades (0.0%, $0.00)
-PROP:           survived; min headroom to threshold $1,821.98 (threshold $2,000.00)
+Consistency:    largest day = 96.4% of profit
+Duration:       median 6042s   min 58s   <10s: 0 trades (0.0%, $0.00)
+PROP:           survived; min headroom to threshold $1,822.98 (threshold $2,000.00)
+Order latency:  100 ms
 
 Monte Carlo:    2000 sims of 60 trades (block resampling, block=8, max autocorr 0.25)
-  final P&L:    5% $-252   median $96   95% $464   P(profit) 67%
-  max drawdown: median $-201   5%-worst $-384
+  final P&L:    5% $-252   median $95   95% $465   P(profit) 66%
+  max drawdown: median $-201   5%-worst $-385
   PROP:         P(breach $2,000 trailing) = 0.0%
   EVAL:         P(hit $3,000 before breach) = 0.0%   P(breach first) = 0.0%   unresolved = 100.0%
+
+Ledger:         trial #1 of EmaCross:ema_cross.py (1 distinct configs)  [seq 1]
 ```
+
+The roll warning is about real per-contract day files (see
+[Contract rolls](#contract-rolls)); the demo data is a single contract, so
+there is nothing to flatten. Net P&L here includes the 100 ms default order
+latency (see [Fill model](#fill-model)).
 
 It also writes an HTML tearsheet and a trades CSV to `reports/`.
 
@@ -307,6 +319,49 @@ and walk-forward efficiency with Davey's verdict (< 0.5 = likely curve-fit).
 - Stops trigger on last, fill at the quote, never better than the stop price.
 - Commissions are per-contract round-turn defaults in
   `backtester/contracts.py` — adjust to your firm's rates.
+- **Order latency.** A new order, and the stop/target legs a bracket creates at
+  its entry fill, reaches the exchange `latency_ms` after it is sent and cannot
+  fill on an earlier tick. The default is **100 ms** (`--latency-ms`, or a
+  strategy's `latency_ms`; `0` turns it off, which is the optimistic case). The
+  number comes from one live measurement of one prop-firm account and
+  connection (Apex via Tradovate): a starting point, not a constant. Three more
+  settings are opt-in and off by default: `--cancel-latency-ms` and
+  `--modify-latency-ms` (a strategy's cancel or price change reaches the exchange
+  that long after it is sent; until then the order is live as it was, so a
+  cancelled order can still fill), and `--bracket-latency-ms` (how long after the
+  entry fill the protective legs go live; default: the order latency). The
+  engine's own cancels and flattens are never delayed.
+- **Exit orders only reduce.** A stop or target left working after its position
+  was closed or reversed by something else is cancelled, not filled; it can
+  never open a position (NinjaTrader cancels a position's managed exits the same
+  way).
+- **Daily limits** (`--daily-loss-limit`, `--daily-profit-target`) have two
+  modes, `--daily-limit-mode gate` (default: the day's *realized* P&L blocks new
+  entries, exits keep working) and `kill` (equity including open P&L, tick by
+  tick: flatten and refuse every order). The same dollar figure means different
+  things in the two modes.
+- **Drawdown** is tracked on every tick, not on bar closes, so a dip that
+  recovers inside a bar still counts.
+
+### Contract rolls
+
+If your day files each hold one unadjusted contract, the contract changes at a
+midnight inside the session and the price jumps by the calendar spread. A
+position carried across it would book that spread as P&L. The engine therefore
+cancels orders and flattens before every **scheduled** roll (from a schedule,
+never from the price jump, which would be look-ahead). Build the schedule from
+your own data once, and again after each data update:
+
+```bash
+python -m tools.roll_calendar build      # writes data/roll_calendar.json (a few minutes)
+python -m tools.roll_calendar check      # does it still match the data?
+```
+
+Without that file the engine warns and does not flatten. `--no-roll-flatten`
+turns the flattening off; `--roll-block-minutes N` (opt-in) also refuses new
+entries for N minutes after each roll, which shows whether a result depends on
+signals fired by the spread. Index futures, gold and silver are covered; CL and
+MCL are not.
 
 ## Prop-firm simulation
 
@@ -372,13 +427,18 @@ python cli.py <strategy.py> [--symbol MNQ] [--period 1m] [--start D] [--end D]
               [--balance 50000] [--prop-threshold 2000] [--prop-halt]
               [--daily-loss-limit 600] [--news-filter [--news-pre 5]
               [--news-post 5] [--news-currencies USD] [--news-flatten]]
-              [--slippage 0] [--mc 2000] [--mc-target 3000] [--out report.html]
+              [--daily-profit-target 900] [--daily-limit-mode gate|kill]
+              [--slippage 0] [--latency-ms 100] [--cancel-latency-ms 0]
+              [--modify-latency-ms 0] [--bracket-latency-ms N]
+              [--no-roll-flatten] [--roll-block-minutes 0]
+              [--mc 2000] [--mc-target 3000] [--out report.html]
               [--no-report] [--data-root P]
 ```
 
 `--period` accepts any bar type above (`1m`, `500t`, `r8-4`, `s64-16`, `tb120`).
 `--prop-threshold`/`--prop-halt` also accept the legacy `--apex-*` names.
-Env overrides: `BACKTESTER_DATA_ROOT`, `BACKTESTER_CACHE`.
+Env overrides: `BACKTESTER_DATA_ROOT`, `BACKTESTER_CACHE`, `BACKTESTER_LEDGER`,
+`BACKTESTER_MANIFEST_DIR`.
 
 Each report also writes `<name>_trades.csv`. To validate fills against
 NinjaTrader, export the same strategy's trades from NT8 Strategy Analyzer
@@ -391,15 +451,39 @@ python tools/compare_nt8.py reports/MyStrat_MNQ_trades.csv nt8_export.csv --symb
 It matches trades by direction + entry time and reports entry/exit price
 deltas in ticks.
 
+## Is the result real?
+
+A backtest is a claim. Every run from the CLI, a sweep or a walk-forward writes a
+**manifest** (git SHA and dirty flag, data fingerprint, strategy and parameters,
+costs, results, a hash of the trade list) and appends one line to an append-only
+**trial ledger** in `~/.local/share/gbbacktester/`. The printed line
+`trial #N of <strategy> (K distinct configs)` is how many variants you have
+tried, which is what any later judgement has to be made against. Tools that
+question a result:
+
+```bash
+python -m tools.causality_check <strategy.py> --start D --end D   # deletes the future: did any decision change? (look-ahead)
+python -m tools.random_control <strategy.py> --start D --end D    # randomises the direction: how much of the result is the signal?
+python -m tools.deflated_sharpe --seq N                           # Sharpe deflated for the number of tries (advisory)
+python -m tools.orphan_exits <strategy.py> --start D --end D      # stop/target legs left behind by a strategy
+```
+
+`walkforward.py` is the only out-of-sample evidence; a parameter set picked on
+the full history is in-sample. Check the prop-firm headroom of every sweep cell,
+not only the Sharpe of the best one.
+
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
 
-Covers fill semantics (market/limit/stop/bracket/OCO/reversals), account
-math, bar building, and the Apex trailing/lock/halt behavior on synthetic
-tick streams.
+Covers fill semantics (market/limit/stop/bracket/OCO/reversals), order latency
+and the opt-in execution latencies, daily limits, contract rolls, account math,
+bar building, run manifests, the bias-check tools and the Apex
+trailing/lock/halt behavior on synthetic tick streams. Tests marked `data` need
+real tick data (`BACKTESTER_DATA_ROOT`) and are skipped by default.
 
 ## Limitations
 
@@ -417,8 +501,10 @@ tick streams.
   source. Parity is high but not bit-perfect on every bar (the tolerance and
   residuals are described under [Bar types](#bar-types)).
 - **Backtests are not live results.** There is no live-trading component.
-  Slippage, latency, partial fills and rule changes at your firm are not
-  captured.
+  Latency is modelled (default 100 ms, from one measurement on one account;
+  cancels and modifies are instant unless you set them) and slippage is
+  whatever you pass, but partial fills, queue position and rule changes at your
+  firm are not captured.
 - **Prop-firm rules are a model.** Check the real rules of the firm and
   account type you use.
 
