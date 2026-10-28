@@ -416,7 +416,7 @@ class Strategy:
 @dataclass(frozen=True)
 class BarSpec:
     """Parsed bar type.
-    kind: 'time' | 'tick' | 'renko' | 'saber' | 'tbars' | 'wave'."""
+    kind: 'time' | 'tick' | 'renko' | 'saber' | 'tbars' | 'wave' | 'orenko'."""
     kind: str
     seconds: int = 0          # time bars
     ticks: int = 0            # tick-count bars: trades per bar
@@ -427,6 +427,9 @@ class BarSpec:
     filter_s: int = 0         # saber: Time Filter, seconds
     speed_ticks: int = 0      # tbars: "Speed Settings" (N), ticks
     wave_ticks: int = 0       # wave: "Wave Size" (N), ticks
+    orenko_open: int = 0      # orenko: "Open Offset", ticks (may be 0)
+    orenko_trend: int = 0     # orenko: "Trend Threshold", ticks
+    orenko_rev: int = 0       # orenko: "Reversal Threshold", ticks
 
     @property
     def key(self) -> str:
@@ -440,6 +443,8 @@ class BarSpec:
             return f"tb{self.speed_ticks}"
         if self.kind == "wave":
             return f"w{self.wave_ticks}"
+        if self.kind == "orenko":
+            return f"o{self.orenko_trend}-{self.orenko_open}-{self.orenko_rev}"
         return f"r{self.brick_ticks}-{self.trend_ticks}"
 
 
@@ -448,8 +453,18 @@ def parse_barspec(period: str) -> BarSpec:
     (brick 8 ticks, trend threshold 4; 'r8' defaults trend to brick/2);
     's64-16'/'s64-16-2' SaberRenko (Bar Size 64, Offset 16, Time Filter
     seconds, default 1); 'tb120' TBars ("Speed Settings" N=120); 'w120' Wave
-    Bars ("Wave Size" N=120)."""
+    Bars ("Wave Size" N=120); 'o4-12-28' Orenko (Trend 4, Open Offset 12,
+    Reversal 28 ticks: the order of NT8's own "4/12/28" chart label)."""
     p = period.strip().lower()
+    m = re.fullmatch(r"o(\d+)-(\d+)-(\d+)", p)
+    if m:
+        trend, open_t, rev = (int(g) for g in m.groups())
+        if trend < 1 or rev < 1:
+            raise ValueError(
+                f"Orenko trend ({trend}) and reversal ({rev}) thresholds must "
+                "be >= 1 tick — a zero threshold makes a bar per tick")
+        return BarSpec("orenko", orenko_open=open_t, orenko_trend=trend,
+                       orenko_rev=rev)
     m = re.fullmatch(r"w(\d+)", p)
     if m:
         wave = int(m.group(1))
@@ -505,7 +520,7 @@ def parse_barspec(period: str) -> BarSpec:
         return BarSpec("time", seconds=int(p))
     raise ValueError(
         f"Unrecognized bar period {period!r} "
-        "(examples: 30s, 1m, 5m, 500t, r8, r8-4, s64-16, tb120, w120)")
+        "(examples: 30s, 1m, 5m, 500t, r8, r8-4, s64-16, tb120, w120, o4-12-28)")
 
 
 def parse_period(period: str) -> int:

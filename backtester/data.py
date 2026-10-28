@@ -475,6 +475,12 @@ class Catalog:
                 symbol, dates, spec, days,
                 lambda day, carry: build_wave_bars(
                     day, spec.wave_ticks, tick_size, carry=carry))
+        if spec.kind == "orenko":
+            return self._load_sequence_carry(
+                symbol, dates, spec, days,
+                lambda day, carry: build_orenko_bars(
+                    day, spec.orenko_open, spec.orenko_trend, spec.orenko_rev,
+                    tick_size, carry=carry), keep_dir=True)
         return [self.load_bars(symbol, date, spec, tick_size,
                                days[i] if days is not None else None)
                 for i, date in enumerate(dates)]
@@ -504,12 +510,18 @@ class Catalog:
 
     def _load_sequence_carry(self, symbol: str, dates: list[str], spec,
                              days: list[DayL1] | None,
-                             build) -> list[BarDay]:
+                             build, keep_dir: bool = False) -> list[BarDay]:
         """load_bars_sequence for bar kinds that thread an opaque carry
         TUPLE across days (saber, tbars). `build(day, carry) -> BarDay` is
         the kind's builder with its parameters already bound; renko keeps a
         separate path because its carry is two named scalars stored as
         distinct parquet metadata fields.
+
+        `keep_dir` (Orenko): a genuine gap still starts a fresh bar, but the
+        previous direction survives it as `("reseed", dir)`, because the
+        vendor's session re-seed keeps `barDirection`. Without it the carry
+        drops to None and the first bar after a weekend reopen is a collapsed
+        doji instead of NT8's. TBars/Wave leave it off (they drop direction).
         """
         out: list[BarDay] = []
         carry: tuple | None = None
@@ -521,7 +533,8 @@ class Catalog:
                 continue
             if (prev_last_ts is not None
                     and int(day.ts[0]) - prev_last_ts > RENKO_RESET_GAP_NS):
-                carry = None
+                carry = (("reseed", int(carry[3]))
+                         if keep_dir and carry is not None else None)
             bars, carry = self._load_carry_cached(
                 symbol, date, spec, day, carry, build)
             out.append(bars)
@@ -635,7 +648,8 @@ def _flow_volumes(day: DayL1) -> tuple[np.ndarray, np.ndarray]:
 
 
 def build_bars(day: DayL1, spec, tick_size: float) -> BarDay:
-    """Dispatch on BarSpec.kind: time / tick / renko / saber / tbars / wave."""
+    """Dispatch on BarSpec.kind: time / tick / renko / saber / tbars / wave /
+    orenko."""
     if spec.kind == "time":
         return build_time_bars(day, spec.seconds)
     if spec.kind == "tick":
@@ -650,6 +664,9 @@ def build_bars(day: DayL1, spec, tick_size: float) -> BarDay:
         return build_tbar_bars(day, spec.speed_ticks, tick_size)
     if spec.kind == "wave":
         return build_wave_bars(day, spec.wave_ticks, tick_size)
+    if spec.kind == "orenko":
+        return build_orenko_bars(day, spec.orenko_open, spec.orenko_trend,
+                                 spec.orenko_rev, tick_size)
     raise ValueError(f"Unknown bar kind {spec.kind!r}")
 
 
@@ -1281,10 +1298,52 @@ def build_wave_bars(day: DayL1, wave_ticks: int, tick_size: float,
         reset_carries_dir=False, seed_symmetric=True)
 
 
+def build_orenko_bars(day: DayL1, open_ticks: int, trend_ticks: int,
+                      rev_ticks: int, tick_size: float,
+                      carry: tuple | None = None) -> BarDay:
+    """Orenko bars.
+
+    NT8 bar type `Orenko` (Obsidian Orenko Pack, custom BarsPeriodType 2023).
+    The vendor DLL is obfuscated, so the rule below was INFERRED from its public
+    UniRenko ancestor and the DLL's readable metadata, then checked against an
+    NT8 chart export.
+
+    It is the TBars loop with the three distances taken directly instead of
+    derived from one knob, and WITHOUT Heikin-Ashi smoothing:
+
+    - trend      `trend_ticks` — with-trend continuation (NT8 "Trend Threshold")
+    - reversal   `rev_ticks`   — against-trend           (NT8 "Reversal Threshold")
+    - open       `open_ticks`  — synthetic open of the next bar, pulled back
+                                 INSIDE the finished bar (NT8 "Open Offset")
+
+    A completing bar closes exactly on its high (up) or low (down); its
+    successor opens `open_ticks` back toward where it came from, so consecutive
+    bars overlap and `open[i] != close[i-1]` whenever `open_ticks > 0`.
+
+    Two choices as `build_tbar_bars`: the breakout tick belongs to the NEW bar
+    only (the vendor code books its volume in both, which this repo's
+    non-overlapping `[i0, i1)` spans cannot represent), and resets are
+    gap-driven, not calendar-driven. Unlike TBars, a re-seed KEEPS the prior
+    direction, because the NT8 export shows the vendor does: after a down
+    session the new session arms an inverted band, the first tick satisfies
+    both tests, maxExceeded wins and the first bar closes a trend-distance on
+    the wrong side of its open. That is safe to reproduce here because NT8
+    keeps a bar's open inside its high/low, which this loop copies, so no
+    inverted OHLC reaches an indicator. `carry` has the same shape as for
+    TBars and Wave, plus `("reseed", dir)` for a day that opens a new session
+    but keeps the previous direction (see `Catalog.load_bars_sequence`).
+    """
+    return _build_tbar_family_core(
+        day, trend_ticks * tick_size, rev_ticks * tick_size,
+        open_ticks * tick_size, tick_size, carry,
+        reset_carries_dir=True, seed_symmetric=False, heikin_ashi=False)
+
+
 def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
                             open_off: float, tick_size: float,
                             carry: tuple | None, reset_carries_dir: bool,
-                            seed_symmetric: bool) -> BarDay:
+                            seed_symmetric: bool,
+                            heikin_ashi: bool = True) -> BarDay:
     """Shared hot loop for the TBars family (`build_tbar_bars`,
     `build_wave_bars`).
 
@@ -1300,6 +1359,14 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
       `reset_carries_dir=True`.
     - `True` (Wave) — seed `open +/- trend`, always a valid band.
       `reset_carries_dir` is ignored.
+
+    `heikin_ashi=False` (Orenko) emits the RAW bar instead: a completing bar
+    closes on its clamped threshold, a bar abandoned at a session gap closes on
+    its last trade, and the successor opens at the synthetic open itself
+    (`fake_open`), not the average of it and the prior close. Everything else
+    (strict breakout, clamp, thresholds, carry tuple) is the same loop. The
+    raw path rounds the clamped close and the synthetic open to the tick grid,
+    which is what NT8's tick-aware `Compare` makes of float drift.
     """
     n = len(day)
     if n == 0:
@@ -1330,9 +1397,13 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
     def ha_close(o: float, h: float, l: float, c: float) -> float:
         return rnd((o + h + l + c) * 0.25)
 
-    if carry is None:
+    # carry = ("reseed", d): a FRESH bar at this day's first trade that keeps
+    # the previous bar's direction d, i.e. a session re-seed across a day-file
+    # gap, as the in-loop gap branch does when reset_carries_dir is on.
+    fresh = carry is None or carry[0] == "reseed"
+    if fresh:
         bar_open = run_hi = run_lo = float(prices[0])
-        bar_dir = 0
+        bar_dir = 0 if carry is None else int(carry[1])
         # TBars: bar_dir is 0 here, so the band COLLAPSES onto the open and the
         # next differing tick completes a zero-range doji. Wave: a real
         # +/-trend band, so the first bar is a real bar (WaveBars.md §5.2).
@@ -1343,12 +1414,18 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
     else:
         (bar_open, bar_max, bar_min, bar_dir, run_hi, run_lo,
          cv, cb, cs) = carry
+    # Close the forming bar was OPENED with (the previous bar's clamped close,
+    # or the seed price); only the raw (non-HA) path reads it, for a bar that
+    # a session gap abandons before any updating tick. The carry tuple does not
+    # hold it and a carried-in bar never needs it: a day file cannot begin on a
+    # gap, so the carried-in bar always gets an updating tick first.
+    open_close = bar_open
     i0 = 0
     # A fresh/re-seeded bar is OPENED by the tick at i0, so that tick cannot
     # also complete it (the DLL returns after AddBar) — the scan starts at
     # i0+1. A carried-in bar was opened on a PRIOR day, so index 0 here is an
     # ordinary updating tick and must stay eligible to complete it at once.
-    scan_off = 0 if carry is not None else 1
+    scan_off = 1 if fresh else 0
 
     while i0 < n:
         pos = int(np.searchsorted(gap_starts, i0, side="right"))
@@ -1379,12 +1456,23 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
             # (inverted) seed makes both true; the clamp then collapses to the
             # threshold itself, since p is strictly beyond it.
             c1 = bar_max if max_exc else bar_min
+            if not heikin_ashi:
+                c1 = rnd(c1)
             bar_dir = 1 if max_exc else -1
             fake_open = c1 - open_off * bar_dir
+            if not heikin_ashi:
+                fake_open = rnd(fake_open)
 
             hi = c1 if max_exc else run_hi
             lo = c1 if min_exc else run_lo
-            closing = ha_close(bar_open, hi, lo, c1)
+            if not heikin_ashi:
+                # NT8 keeps a bar's open inside its own range, and a bar must
+                # hold its close. Only matters when a carried direction armed
+                # an inverted band (maxExceeded wins and c1 sits on the wrong
+                # side of the open, or of the running extreme); otherwise
+                # run_hi/run_lo already hold both.
+                hi, lo = max(hi, bar_open, c1), min(lo, bar_open, c1)
+            closing = ha_close(bar_open, hi, lo, c1) if heikin_ashi else c1
             opens.append(bar_open); highs.append(hi); lows.append(lo)
             closes.append(closing)
             vols.append(cv + (int(vol[i0:k].sum()) if k > i0 else 0))
@@ -1393,9 +1481,13 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
             cv = cb = cs = 0        # carried-in volume belongs to this bar only
             ts_end.append(int(ts[k])); i0s.append(i0); i1s.append(k)
 
-            bar_open = rnd((fake_open + closing) * 0.5)  # Heikin-Ashi open
+            bar_open = (rnd((fake_open + closing) * 0.5) if heikin_ashi
+                        else fake_open)   # Heikin-Ashi open / raw synthetic open
             run_hi = c1 if max_exc else fake_open
             run_lo = c1 if min_exc else fake_open
+            if not heikin_ashi:             # same rule for the successor's AddBar
+                run_hi, run_lo = max(run_hi, fake_open), min(run_lo, fake_open)
+            open_close = c1
             bar_max = c1 + (trend_off if bar_dir > 0 else rev_off)
             bar_min = c1 - (rev_off if bar_dir > 0 else trend_off)
             i0 = k
@@ -1412,7 +1504,15 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
             run_hi = max(run_hi, float(prices[start:next_gap].max()))
             run_lo = min(run_lo, float(prices[start:next_gap].min()))
         opens.append(bar_open); highs.append(run_hi); lows.append(run_lo)
-        closes.append(ha_close(bar_open, run_hi, run_lo, float(prices[end_idx])))
+        if heikin_ashi:
+            closes.append(ha_close(bar_open, run_hi, run_lo,
+                                   float(prices[end_idx])))
+        else:
+            # last updating tick, or the opening close if there was none
+            # (the opening tick's raw price lies beyond the clamped threshold,
+            # i.e. outside this bar's own range)
+            closes.append(float(prices[end_idx]) if end_idx >= start
+                          else open_close)
         vols.append(cv + int(vol[i0:next_gap].sum()))
         bvols.append(cb + int(buy[i0:next_gap].sum()))
         svols.append(cs + int(sell[i0:next_gap].sum()))
@@ -1433,7 +1533,7 @@ def _build_tbar_family_core(day: DayL1, trend_off: float, rev_off: float,
             if not reset_carries_dir:
                 bar_dir = 0
             seed_off = trend_off * bar_dir
-        bar_open = run_hi = run_lo = float(prices[next_gap])
+        bar_open = run_hi = run_lo = open_close = float(prices[next_gap])
         bar_max = bar_open + seed_off
         bar_min = bar_open - seed_off
         i0 = next_gap

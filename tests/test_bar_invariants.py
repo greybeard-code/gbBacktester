@@ -27,16 +27,16 @@ from hypothesis import strategies as st
 
 from backtester.data import (Catalog, DayL1, build_bars,
                              build_renko_bars, build_saber_bars,
-                             build_tbar_bars, build_wave_bars)
+                             build_orenko_bars, build_tbar_bars, build_wave_bars)
 from backtester.strategy import parse_barspec
 
 from conftest import et_ns, make_day_at
 from synth_stream import (GAPS_MS, PROFILE, RESET_GAP_NS, TICK, slice_day,  # noqa: F401
                           streams)
 
-SPECS = ("5s", "60s", "7t", "r8-4", "r10-3", "r20", "s16-4", "tb40", "tb120", "w40", "w120")
-TICK_GRID_KINDS = ("renko", "saber", "tbars", "wave")
-CARRY_STATE_KINDS = ("saber", "tbars", "wave")       # end_state[-3:] = forming volumes
+SPECS = ("5s", "60s", "7t", "r8-4", "r10-3", "r20", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12", "o4-0-8")
+TICK_GRID_KINDS = ("renko", "saber", "tbars", "wave", "orenko")
+CARRY_STATE_KINDS = ("saber", "tbars", "wave", "orenko")       # end_state[-3:] = forming volumes
 
 
 def span_sums(d: DayL1, b):
@@ -181,6 +181,9 @@ def _build_next(spec_s, d, prev):
                                 sp.filter_s * 1_000_000_000, carry=carry)
     if sp.kind == "tbars":
         return build_tbar_bars(d, sp.speed_ticks, TICK, carry=carry)
+    if sp.kind == "orenko":
+        return build_orenko_bars(d, sp.orenko_open, sp.orenko_trend,
+                                 sp.orenko_rev, TICK, carry=carry)
     return build_wave_bars(d, sp.wave_ticks, TICK, carry=carry)
 
 
@@ -232,7 +235,7 @@ def three_way_streams(draw):
     return d, m1, m2, not (gap_between(d, m1) or gap_between(d, m2))
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40", "o2-6-12"))
 @settings(**PROFILE)
 @given(case=three_way_streams())
 def test_a_middle_file_inside_one_bar_hands_the_carry_on_intact(spec_s, case):
@@ -251,7 +254,7 @@ def test_a_middle_file_inside_one_bar_hands_the_carry_on_intact(spec_s, case):
         assert len(joined) == len(w) and np.allclose(joined, w), (spec_s, f, m1, m2)
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "tb120", "w40", "w120"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12"))
 def test_building_in_two_halves_equals_one_build_for_every_carrying_bar_type(spec_s):
     """The acceptance test for the carry: every field of every bar, including the
     one that straddles the file boundary and including a brick abandoned at a
@@ -259,7 +262,7 @@ def test_building_in_two_halves_equals_one_build_for_every_carrying_bar_type(spe
     run_split(spec_s, FIELDS)
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40", "o2-6-12"))
 @settings(**PROFILE)
 @given(case=split_streams(reset_gaps=False))
 def test_no_volume_is_lost_across_the_file_boundary(spec_s, case):
@@ -392,7 +395,7 @@ def real_days():
 
 
 @pytest.mark.data
-@pytest.mark.parametrize("spec_s", ("60s", "500t", "r100-4", "r60-3", "s64-16", "tb120", "w120"))
+@pytest.mark.parametrize("spec_s", ("60s", "500t", "r100-4", "r60-3", "s64-16", "tb120", "w120", "o4-12-28"))
 def test_bar_invariants_hold_on_real_days(spec_s, real_days):
     for d in real_days:
         check_bars(d, spec_s)
