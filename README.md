@@ -140,7 +140,8 @@ from backtester import EMA, Strategy
 class MyStrat(Strategy):
     symbol = "MNQ"
     period = "1m"                    # time 1m; tick 500t; renko r8-4 / saber
-                                     # s64-16; tbars tb120 (see Bar types)
+                                     # s64-16; tbars tb120; wave w120; orenko
+                                     # o4-12-28 (see Bar types)
     session = ("09:30", "16:00")     # US/Eastern; None = full day
     flat_at_session_end = True
     qty = 2
@@ -183,7 +184,7 @@ multi-bracket exits.
 ## Bar types
 
 Set the bar type with the `period` string — on the strategy (`period = "r8-4"`)
-or per run (`--period r8-4`). Five families are supported (`backtester/
+or per run (`--period r8-4`). Seven families are supported (`backtester/
 strategy.py::parse_barspec`):
 
 | Syntax | Kind | Meaning |
@@ -193,6 +194,8 @@ strategy.py::parse_barspec`):
 | `r8-4` (`r8`) | **Renko — ninZaRenko** | Brick 8 ticks (body height), trend threshold 4 ticks (with-trend close distance from the prior close). `r8` defaults trend to brick/2. Constraint: trend ≤ brick. |
 | `s64-16` (`s64-16-2`) | **Renko — SaberRenko** | Bar Size B = 64 ticks, Offset O = 16, optional Time Filter in seconds (3rd field, default 1). Constraints: O ≤ B and B a multiple of O (keeps closes on the renko grid). |
 | `tb120` | **TBars** | One "Speed Settings" parameter N = 120 ticks; the port derives trend N//2, reversal N·2, open offset N — so a reversal costs 4× a continuation. N ≥ 2. |
+| `w120` | **Wave Bars** | One "Wave Size" parameter N = 120 ticks, same derived distances as TBars (trend max(1, N//2), reversal N·2, open offset N). N ≥ 1. |
+| `o4-12-28` | **Orenko** | Three independent distances in ticks, in NT8's chart-label order: **Trend** 4, **Open Offset** 12, **Reversal** 28. Trend ≥ 1, Reversal ≥ 1, Open Offset ≥ 0. |
 
 **ninZaRenko** (`r8-4`) implements the published ninZaRenko manual: open offset
 = brick − trend (bars overlap), reversal threshold = 2·brick − trend, equal
@@ -209,6 +212,29 @@ open = midpoint of synthetic open and prior close) — faithful to what NT8
 charts. Prices are stored on the tick grid, rounded half-to-even inside the
 state loop, exactly as NT8 does. Certified against an NT8 export (geometry and
 bar timing exact; residual is ±1-tick HA-rounding propagation on ~9% of bars).
+
+**Wave Bars** (`w120`) is the TBars algorithm under a different vendor
+(FlowMatriX, NT8 BarsPeriodType 77077): the same strict breakout, exact-threshold
+close and Heikin-Ashi output. Two differences: the first bar after a reset is a
+real bar (no one-tick doji stub), and the NT8 original does not double-count the
+breakout tick's volume. Checked against NT8 chart exports (MNQ and MGC): high/low
+agree on essentially every bar and what is left is ±1-tick Heikin-Ashi rounding.
+
+**Orenko** (`o4-12-28`) ports the Obsidian Orenko Pack's `Orenko` bar type. A
+bar closes when price moves **Trend** ticks past its prior close, or **Reversal**
+ticks back against it; the close is clamped onto that level, so every finished
+bar closes exactly on its high (up) or low (down). The next bar opens **Open
+Offset** ticks back *inside* the finished one, so consecutive bars overlap and
+`open ≠ previous close`. Unlike TBars and Wave there is **no Heikin-Ashi**:
+the OHLC is raw. Like the vendor, a session re-seed keeps the previous
+direction. The vendor DLL is protected, so the rule was inferred from the public
+UniRenko bar type and then checked against NT8 chart exports: NQ `4/12/28`
+matched 99.7% of bars by time (99.3% identical OHLC) and MNQ `3/5/11` 99.2%
+(96.9%); the differences left are a chart-start artefact and stretches where
+the recorded ticks differ from NT8's feed. Only those two parameter sets were
+checked, and no export spanned a contract roll. Note the order:
+the number you read off the NT8 chart label (`4/12/28`) is trend/open/reversal,
+and so is the string here.
 
 Bar type only changes *when the strategy is asked to decide*. Orders always
 fill against the real tick stream regardless of bar type, so none of NT8's
