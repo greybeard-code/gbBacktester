@@ -34,8 +34,8 @@ from conftest import et_ns, make_day_at
 from synth_stream import (GAPS_MS, PROFILE, RESET_GAP_NS, TICK, slice_day,  # noqa: F401
                           streams)
 
-SPECS = ("5s", "60s", "7t", "r8-4", "r10-3", "r20", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12", "o4-0-8")
-TICK_GRID_KINDS = ("renko", "saber", "tbars", "wave", "orenko")
+SPECS = ("5s", "60s", "7t", "r8-4", "r10-3", "r20", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12", "o4-0-8", "k8-4", "k10-3")
+TICK_GRID_KINDS = ("renko", "kingrenko", "saber", "tbars", "wave", "orenko")
 CARRY_STATE_KINDS = ("saber", "tbars", "wave", "orenko")       # end_state[-3:] = forming volumes
 
 
@@ -114,8 +114,18 @@ def check_bars(d: DayL1, spec_s: str) -> None:
         # Saber H/L are real traded extremes: inside the day's range
         assert b.high.max() <= d.price.max() + eps and b.low.min() >= d.price.min() - eps
 
-    if spec.kind == "renko":
-        brick = spec.brick_ticks
+    if spec.kind == "kingrenko":
+        # real open: the first trade of the span; a brick with an empty span (the
+        # extra bricks of a gap sweep) is flat at its level and carries no volume
+        for k in range(m):
+            i0, i1 = int(b.i0[k]), int(b.i1[k])
+            if i1 > i0:
+                assert b.open[k] == d.price[i0], f"kingrenko bar {k} open is not its first trade"
+            else:
+                assert b.open[k] == b.high[k] == b.low[k] == b.close[k], f"empty-span bar {k} not flat"
+                assert b.volume[k] == 0
+
+    if spec.kind in ("renko", "kingrenko"):
         for k in range(1, m):
             if b.i0[k] > b.i1[k - 1]:
                 # a hole in the spans = an abandoned forming brick = a reset gap
@@ -124,6 +134,8 @@ def check_bars(d: DayL1, spec_s: str) -> None:
                     "renko spans have a hole with no 30-minute gap in it")
         if int(b.i0[0]) > 0:
             assert any(gap_between(d, j) for j in range(1, int(b.i0[0]) + 1))
+    if spec.kind == "renko":
+        brick = spec.brick_ticks
         body = np.abs(b.close - b.open) / TICK
         assert (body <= brick + 1e-6).all()
         for k in np.flatnonzero(body == 0):
@@ -169,12 +181,14 @@ def build_chain(spec_s, parts):
 
 def _build_next(spec_s, d, prev):
     sp = parse_barspec(spec_s)
-    if sp.kind == "renko":
+    if sp.kind in ("renko", "kingrenko"):
         b, t = sp.brick_ticks * TICK, sp.trend_ticks * TICK
+        real = sp.kind == "kingrenko"
         if prev is None:
-            return build_renko_bars(d, b, t)
+            return build_renko_bars(d, b, t, real_open=real)
         return build_renko_bars(d, b, t, carry_anchor=prev.end_anchor,
-                                carry_dir=prev.end_dir, carry_state=prev.end_state)
+                                carry_dir=prev.end_dir, carry_state=prev.end_state,
+                                real_open=real)
     carry = None if prev is None else prev.end_state
     if sp.kind == "saber":
         return build_saber_bars(d, sp.bar_ticks, sp.offset_ticks, TICK,
@@ -235,7 +249,7 @@ def three_way_streams(draw):
     return d, m1, m2, not (gap_between(d, m1) or gap_between(d, m2))
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40", "o2-6-12"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "k8-4", "s16-4", "tb40", "w40", "o2-6-12"))
 @settings(**PROFILE)
 @given(case=three_way_streams())
 def test_a_middle_file_inside_one_bar_hands_the_carry_on_intact(spec_s, case):
@@ -254,7 +268,7 @@ def test_a_middle_file_inside_one_bar_hands_the_carry_on_intact(spec_s, case):
         assert len(joined) == len(w) and np.allclose(joined, w), (spec_s, f, m1, m2)
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "k8-4", "k10-3", "s16-4", "tb40", "tb120", "w40", "w120", "o2-6-12"))
 def test_building_in_two_halves_equals_one_build_for_every_carrying_bar_type(spec_s):
     """The acceptance test for the carry: every field of every bar, including the
     one that straddles the file boundary and including a brick abandoned at a
@@ -262,20 +276,20 @@ def test_building_in_two_halves_equals_one_build_for_every_carrying_bar_type(spe
     run_split(spec_s, FIELDS)
 
 
-@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "s16-4", "tb40", "w40", "o2-6-12"))
+@pytest.mark.parametrize("spec_s", ("r8-4", "r10-3", "k8-4", "s16-4", "tb40", "w40", "o2-6-12"))
 @settings(**PROFILE)
 @given(case=split_streams(reset_gaps=False))
 def test_no_volume_is_lost_across_the_file_boundary(spec_s, case):
     # No reset gap, so nothing is abandoned: everything the bars did not use is
     # the forming bar, carried out in end_state and counted in the second file's
-    # bars or in ITS end_state. (renko end_state = (vol, buy, sell, hi, lo);
+    # bars or in ITS end_state. (renko end_state = (vol, buy, sell, hi, lo), kingrenko adds the open;
     # saber/tbars/wave end with (vol, buy, sell).)
     d, m, ok = case
     if not ok:
         return
     d1, d2 = slice_day(d, 0, m), slice_day(d, m, len(d))
     b1, b2 = build_in_two(spec_s, d1, d2)
-    fv, fb = ((b2.end_state[0], b2.end_state[1]) if spec_s.startswith("r")
+    fv, fb = ((b2.end_state[0], b2.end_state[1]) if spec_s.startswith(("r", "k"))
               else (b2.end_state[-3], b2.end_state[-2]))
     assert int(b1.volume.sum()) + int(b2.volume.sum()) + int(fv) == int(d.volume.sum())
     assert (int(b1.buy_volume.sum()) + int(b2.buy_volume.sum()) + int(fb)

@@ -416,12 +416,15 @@ class Strategy:
 @dataclass(frozen=True)
 class BarSpec:
     """Parsed bar type.
-    kind: 'time' | 'tick' | 'renko' | 'saber' | 'tbars' | 'wave' | 'orenko'."""
+    kind: 'time' | 'tick' | 'renko' | 'kingrenko' | 'saber' | 'tbars' | 'wave'
+    | 'orenko'. `greyko` marks a GreyKo spelling of a renko kind: `gk` is
+    'kingrenko' (Traded) and `gr` is 'renko' (Full Brick); the bars are the same
+    as `k` / `r`, only the name (and so the cache folder and the manifest) differs."""
     kind: str
     seconds: int = 0          # time bars
     ticks: int = 0            # tick-count bars: trades per bar
-    brick_ticks: int = 0      # renko: bar body height in ticks
-    trend_ticks: int = 0      # renko: with-trend close distance from prev close
+    brick_ticks: int = 0      # renko/kingrenko: bar body height in ticks
+    trend_ticks: int = 0      # renko/kingrenko: with-trend close distance from prev close
     bar_ticks: int = 0        # saber: Bar Size (B), ticks
     offset_ticks: int = 0     # saber: Offset (O), ticks
     filter_s: int = 0         # saber: Time Filter, seconds
@@ -430,6 +433,7 @@ class BarSpec:
     orenko_open: int = 0      # orenko: "Open Offset", ticks (may be 0)
     orenko_trend: int = 0     # orenko: "Trend Threshold", ticks
     orenko_rev: int = 0       # orenko: "Reversal Threshold", ticks
+    greyko: bool = False      # renko/kingrenko: spelled gr / gk (GreyKo, NT8 id 91003)
 
     @property
     def key(self) -> str:
@@ -445,12 +449,18 @@ class BarSpec:
             return f"w{self.wave_ticks}"
         if self.kind == "orenko":
             return f"o{self.orenko_trend}-{self.orenko_open}-{self.orenko_rev}"
-        return f"r{self.brick_ticks}-{self.trend_ticks}"
+        g = "g" if self.greyko else ""
+        if self.kind == "kingrenko":
+            return f"{g}k{self.brick_ticks}-{self.trend_ticks}"
+        return f"{g}r{self.brick_ticks}-{self.trend_ticks}"
 
 
 def parse_barspec(period: str) -> BarSpec:
     """'30s'/'1m'/'5m'/'1h' time bars; '500t' tick bars; 'r8-4' ninZaRenko
-    (brick 8 ticks, trend threshold 4; 'r8' defaults trend to brick/2);
+    (brick 8 ticks, trend threshold 4; 'r8' defaults trend to brick/2); 'k12-4'
+    KingRenko$ (same settings and grid as ninZaRenko, but a real open);
+    'gk12-4' / 'gr12-4' the same two bar builders under
+    their GreyKo names (Traded = k, Full Brick = r; NT8 bar type id 91003);
     's64-16'/'s64-16-2' SaberRenko (Bar Size 64, Offset 16, Time Filter
     seconds, default 1); 'tb120' TBars ("Speed Settings" N=120); 'w120' Wave
     Bars ("Wave Size" N=120); 'o4-12-28' Orenko (Trend 4, Open Offset 12,
@@ -499,16 +509,18 @@ def parse_barspec(period: str) -> BarSpec:
                 "s64-16, s100-25")
         return BarSpec("saber", bar_ticks=bar, offset_ticks=offset,
                        filter_s=max(1, filt))
-    m = re.fullmatch(r"r(\d+)(?:-(\d+))?", p)
+    m = re.fullmatch(r"(gk|gr|k|r)(\d+)(?:-(\d+))?", p)
     if m:
-        brick = int(m.group(1))
-        trend = int(m.group(2)) if m.group(2) else max(1, brick // 2)
+        kind = "kingrenko" if m.group(1) in ("k", "gk") else "renko"
+        brick = int(m.group(2))
+        trend = int(m.group(3)) if m.group(3) else max(1, brick // 2)
         if trend > brick:
             raise ValueError(
                 f"renko trend threshold ({trend}) must not exceed brick "
                 f"size ({brick}) — manual best practice is brick a multiple "
                 "of trend, e.g. r8-4, r15-5, r20-5")
-        return BarSpec("renko", brick_ticks=brick, trend_ticks=trend)
+        return BarSpec(kind, brick_ticks=brick, trend_ticks=trend,
+                       greyko=m.group(1).startswith("g"))
     m = re.fullmatch(r"(\d+)t", p)
     if m:
         return BarSpec("tick", ticks=int(m.group(1)))
@@ -520,7 +532,7 @@ def parse_barspec(period: str) -> BarSpec:
         return BarSpec("time", seconds=int(p))
     raise ValueError(
         f"Unrecognized bar period {period!r} "
-        "(examples: 30s, 1m, 5m, 500t, r8, r8-4, s64-16, tb120, w120, o4-12-28)")
+        "(examples: 30s, 1m, 5m, 500t, r8, r8-4, s64-16, tb120, w120, o4-12-28, k12-4, gk12-4, gr12-4)")
 
 
 def parse_period(period: str) -> int:

@@ -141,7 +141,7 @@ class MyStrat(Strategy):
     symbol = "MNQ"
     period = "1m"                    # time 1m; tick 500t; renko r8-4 / saber
                                      # s64-16; tbars tb120; wave w120; orenko
-                                     # o4-12-28 (see Bar types)
+                                     # o4-12-28; kingrenko k12-4; GreyKo gk12-4 / gr12-4 (see Bar types)
     session = ("09:30", "16:00")     # US/Eastern; None = full day
     flat_at_session_end = True
     qty = 2
@@ -184,7 +184,7 @@ multi-bracket exits.
 ## Bar types
 
 Set the bar type with the `period` string — on the strategy (`period = "r8-4"`)
-or per run (`--period r8-4`). Seven families are supported (`backtester/
+or per run (`--period r8-4`). Eight families are supported (`backtester/
 strategy.py::parse_barspec`):
 
 | Syntax | Kind | Meaning |
@@ -192,6 +192,7 @@ strategy.py::parse_barspec`):
 | `30s` `1m` `5m` `1h` | **Time** | Fixed clock interval. Bar timestamp = close time (NT8-style); empty bars omitted. A bare integer (`90`) is seconds. |
 | `500t` | **Tick** | Fixed trade-count bars (500 trades per bar). |
 | `r8-4` (`r8`) | **Renko — ninZaRenko** | Brick 8 ticks (body height), trend threshold 4 ticks (with-trend close distance from the prior close). `r8` defaults trend to brick/2. Constraint: trend ≤ brick. |
+| `k12-4` (`k12`) | **Renko — KingRenko$** | Same two settings and the same grid as ninZaRenko (Brick 12, Trend Threshold 4), but with a **real open**. Constraint: trend ≤ brick. |
 | `s64-16` (`s64-16-2`) | **Renko — SaberRenko** | Bar Size B = 64 ticks, Offset O = 16, optional Time Filter in seconds (3rd field, default 1). Constraints: O ≤ B and B a multiple of O (keeps closes on the renko grid). |
 | `tb120` | **TBars** | One "Speed Settings" parameter N = 120 ticks; the port derives trend N//2, reversal N·2, open offset N — so a reversal costs 4× a continuation. N ≥ 2. |
 | `w120` | **Wave Bars** | One "Wave Size" parameter N = 120 ticks, same derived distances as TBars (trend max(1, N//2), reversal N·2, open offset N). N ≥ 1. |
@@ -202,6 +203,23 @@ strategy.py::parse_barspec`):
 bodies both directions. High/low include the synthetic open, matching what NT8
 indicators see. Recommended configs: 8-4, 15-5, 12-4, 20-5, 30-10. Validated
 bar-for-bar against five real NT8 chart exports.
+
+**KingRenko$** (`k12-4`) is RenkoKings' backtestable sibling of ninZaRenko: the
+closes, bar boundaries and volumes are identical, but a bar opens at the price of
+the first trade in it (the previous bar's breakout tick, typically one tick past
+the prior close) instead of a synthetic open, and a brick a gap sweep prints
+without any trade is flat. Checked against an NT8 MNQ `12/4` chart export:
+99.4% of bars matched by time, 99.7% of those with identical OHLC (the
+ninZaRenko build matches none of them); the differences left are stretches
+where the recorded ticks differ from NT8's feed. Compared bar for bar on MNQ
+`12/4`, NQ `12/4` and NQ `64/4` (99.4-99.8% identical OHLC); a contract roll is
+not covered.
+
+**GreyKo** is a NinjaTrader 8 bar type (our own, not part of this repo) that builds this same grid with an
+OHLC Mode dropdown. **Traded** is `gk12-4`: a real open, exactly the `k` bars. **Full Brick** is `gr12-4`:
+ninZaRenko's synthetic OHLC, exactly the `r` bars. `gk` / `gr` are only different names for those two
+builders (they get their own bar-cache folder and show under their own name in results); `k` and `r` stay
+as the vendor-named specs.
 
 **SaberRenko** (`s64-16`) is a second vendor renko variant with an independent
 offset parameter and an optional time filter; geometry and parity were checked against NT8 chart exports.

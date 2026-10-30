@@ -74,10 +74,27 @@ def _eastern_offset_ns(date: str) -> int:
     return int(midday.utcoffset().total_seconds() * 1e9)
 
 
+def _eastern_day_bounds_ns(date: str) -> tuple[int, int]:
+    """[start, end) of the Eastern calendar day `date`, in ns UTC."""
+    d = datetime.strptime(date, "%Y%m%d")
+    start = datetime(d.year, d.month, d.day, tzinfo=_EASTERN)
+    end = datetime.fromordinal(d.toordinal() + 1).replace(tzinfo=_EASTERN)
+    return (int(start.timestamp()) * 1_000_000_000,
+            int(end.timestamp()) * 1_000_000_000)
+
+
 CACHE_VERSION = b"4"   # reduced: v4 = crossed quotes (bid > ask) invalidated to
                        # NaN (see _reduce_raw); v3 = trust replay_importer UTC
                        # tag, else ET->UTC
-BARS_VERSION = b"10"   # bars: v10 = a bar that straddles a day-file boundary keeps
+BARS_VERSION = b"12"   # bars: v12 = renko / KingRenko: the Catalog closes the forming
+                       # brick as a partial at the end of a day file that ends more
+                       # than 30 min before midnight ET (the Friday 16:59:59 bar NT8
+                       # prints at the weekend halt; it was lost at every weekend);
+                       # v11 = renko / KingRenko thresholds are compared in whole
+                       # ticks (build_renko_bars(tick=...)), not in float prices: on a
+                       # 0.1-tick instrument an exact touch was called a breakout about
+                       # one time in five. 0.25- and 1.0-tick output is bit-identical;
+                       # v10 = a bar that straddles a day-file boundary keeps
                        # the part of itself that printed in the earlier file: renko
                        # (volume, buy/sell volume, high, low - new carry_state) and
                        # saber (high/low - the carried seeds were ignored on the normal
@@ -423,7 +440,7 @@ class Catalog:
             del t   # release the read handle before we replace this path
         if day is None:
             day = self.load_day(symbol, date)
-        bars = build_bars(day, spec, tick_size)
+        bars = build_bars(day, spec, tick_size, close_at_eod=True)
         bp.parent.mkdir(parents=True, exist_ok=True)
         tmp = bp.with_suffix(f".{os.getpid()}.tmp")
         pq.write_table(pa.table({c: getattr(bars, c) for c in BAR_COLS})
@@ -457,7 +474,7 @@ class Catalog:
         Non-renko/saber bar kinds are day-independent; this is equivalent
         to calling `load_bars` per day for those.
         """
-        if spec.kind == "renko":
+        if spec.kind in ("renko", "kingrenko"):
             return self._load_sequence_renko(symbol, dates, spec, tick_size, days)
         if spec.kind == "saber":
             return self._load_sequence_carry(
@@ -577,7 +594,9 @@ class Catalog:
         bars = build_renko_bars(day, spec.brick_ticks * tick_size,
                                 spec.trend_ticks * tick_size,
                                 carry_anchor=carry_anchor, carry_dir=carry_dir,
-                                carry_state=carry_state)
+                                carry_state=carry_state,
+                                real_open=spec.kind == "kingrenko",
+                                tick=tick_size, close_at_eod=True)
         bp.parent.mkdir(parents=True, exist_ok=True)
         tmp = bp.with_suffix(f".{os.getpid()}.tmp")
         pq.write_table(pa.table({c: getattr(bars, c) for c in BAR_COLS})
@@ -647,16 +666,20 @@ def _flow_volumes(day: DayL1) -> tuple[np.ndarray, np.ndarray]:
     return buy, sell
 
 
-def build_bars(day: DayL1, spec, tick_size: float) -> BarDay:
-    """Dispatch on BarSpec.kind: time / tick / renko / saber / tbars / wave /
-    orenko."""
+def build_bars(day: DayL1, spec, tick_size: float,
+               close_at_eod: bool = False) -> BarDay:
+    """Dispatch on BarSpec.kind: time / tick / renko / kingrenko / saber /
+    tbars / wave / orenko. `close_at_eod` is the renko kinds' end-of-file partial
+    (see build_renko_bars); the Catalog sets it, hand-made test data does not."""
     if spec.kind == "time":
         return build_time_bars(day, spec.seconds)
     if spec.kind == "tick":
         return build_tick_bars(day, spec.ticks)
-    if spec.kind == "renko":
+    if spec.kind in ("renko", "kingrenko"):
         return build_renko_bars(day, spec.brick_ticks * tick_size,
-                                spec.trend_ticks * tick_size)
+                                spec.trend_ticks * tick_size,
+                                real_open=spec.kind == "kingrenko",
+                                tick=tick_size, close_at_eod=close_at_eod)
     if spec.kind == "saber":
         return build_saber_bars(day, spec.bar_ticks, spec.offset_ticks,
                                 tick_size, spec.filter_s * 1_000_000_000)
@@ -732,8 +755,33 @@ RENKO_RESET_GAP_NS = 30 * 60 * 1_000_000_000   # trade gap that resets the ancho
 def build_renko_bars(day: DayL1, brick: float, trend: float,
                      carry_anchor: float | None = None,
                      carry_dir: int = 0,
-                     carry_state: tuple | None = None) -> BarDay:
+                     carry_state: tuple | None = None,
+                     real_open: bool = False,
+                     tick: float | None = None,
+                     close_at_eod: bool = False) -> BarDay:
     """ninZaRenko bars, per the published trader manual.
+
+    `tick` (the instrument's tick size) makes every threshold compare happen in
+    WHOLE TICKS. Without it the compares use float prices, which is wrong on a
+    0.1-tick instrument: `anchor + 4*0.1` is not the float of the level the
+    trade printed at, so an exact touch (which must not complete a bar) was
+    called a breakout about one time in five. 0.25 and 1.0 are exact in binary
+    and never showed it. The catalog passes it; `None` keeps the float
+    behaviour for hand-made test data.
+
+    `close_at_eod=True` closes the forming brick as a partial at the last trade of a
+    file that ends more than the reset gap before the end of its own Eastern
+    calendar day (the Friday 16:59:59 bar NT8 prints at the weekend halt). Only
+    valid for whole-day files, hence opt-in.
+
+    `real_open=True` builds KingRenko$ bars instead:
+    the SAME grid, closes, spans and volumes, but a bar's open is the price of
+    the first trade in its span (the previous bar's breakout tick, typically one
+    tick past the prior close), not the synthetic `close -/+ body`. A brick with
+    an empty span (the extra bricks of a gap sweep) is flat at its level. High
+    and low are the span's real extremes widened to include the open and the
+    clamped close. With `real_open`, `end_state` carries the forming brick's
+    open as a sixth element so a brick that straddles a day file keeps it.
 
     Parameters (price units here; ticks at the BarSpec level):
     - `brick` B — every bar's body height, both directions.
@@ -783,8 +831,24 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
     n = len(day)
     if n == 0:
         return _empty_bars()
-    prices = day.price
-    rev = 2 * brick - trend
+    prices = day.price                  # raw trade prices: H/L, opens, spans
+    if tick:
+        # everything the geometry compares lives in whole ticks (exact in float64)
+        pu = np.rint(prices / tick)
+        trend_u, brick_u = float(round(trend / tick)), float(round(brick / tick))
+        decimals = 0
+        while decimals < 10 and abs(tick * 10 ** decimals
+                                    - round(tick * 10 ** decimals)) > 1e-9:
+            decimals += 1
+
+        def to_price(u: float) -> float:
+            return round(u * tick, decimals)
+    else:
+        pu, trend_u, brick_u = prices, trend, brick
+
+        def to_price(u: float) -> float:
+            return u
+    rev_u = 2 * brick_u - trend_u
 
     buy, sell = _flow_volumes(day)
     ts_end, opens, highs, lows, closes, vols = [], [], [], [], [], []
@@ -792,15 +856,21 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
 
     # consider only ticks where price changed (big speedup, same bars),
     # plus the first tick after any session gap (reset points)
-    chg = np.flatnonzero(np.diff(prices) != 0) + 1
+    chg = np.flatnonzero(np.diff(pu) != 0) + 1
     gap_starts = np.flatnonzero(np.diff(day.ts) > RENKO_RESET_GAP_NS) + 1
     walk = np.unique(np.concatenate([[0], chg, gap_starts]))
     gap_set = set(gap_starts.tolist())
 
-    anchor = prices[0] if carry_anchor is None else carry_anchor
+    if carry_anchor is None:
+        anchor = pu[0]
+    else:
+        anchor = float(np.rint(carry_anchor / tick)) if tick else carry_anchor
     d = carry_dir            # current trend: +1 / -1 / 0 (no bar yet)
     span_start = 0          # first tick index of the bar being built
     pend = carry_state      # prior file's part of the forming brick, until emitted
+    # real_open: the open the prior file already saw for the forming brick
+    pend_open = (carry_state[5] if real_open and carry_state is not None
+                 and len(carry_state) > 5 else None)
 
     def emit(close: float, direction: int, k: int,
              body: float | None = None, partial: bool = False) -> None:
@@ -811,23 +881,29 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         # the completing bar's H/L, volume and fill span all stop before k.
         # A `partial` close (session halt / EOD) has no breakout tick: its k
         # IS the last real trade and its close price, so include it.
-        nonlocal anchor, span_start, d, pend
+        nonlocal anchor, span_start, d, pend, pend_open
+        cp = to_price(close)              # `close` is in ticks (price when tick=None)
         i0 = span_start
         i1 = k + 1 if partial else k
         seg = prices[i0:i1] if i1 > i0 else None
-        o = close - direction * (brick if body is None else body)
-        hi = seg.max() if seg is not None else close
-        lo = seg.min() if seg is not None else close
+        if real_open:
+            o = (pend_open if pend_open is not None
+                 else float(prices[i0]) if seg is not None else cp)
+        else:
+            o = to_price(close - direction * (brick_u if body is None else body))
+        hi = seg.max() if seg is not None else cp
+        lo = seg.min() if seg is not None else cp
         cv = cb = cs = 0
         if pend is not None:              # the first bar here IS the carried brick
-            cv, cb, cs, phi, plo = pend
+            cv, cb, cs, phi, plo = pend[:5]
             if phi is not None:
                 hi, lo = max(hi, phi), min(lo, plo)
             pend = None
+        pend_open = None
         opens.append(o)
-        closes.append(close)
-        highs.append(max(hi, o, close))
-        lows.append(min(lo, o, close))
+        closes.append(cp)
+        highs.append(max(hi, o, cp))
+        lows.append(min(lo, o, cp))
         vols.append(cv + (int(day.volume[i0:i1].sum()) if i1 > i0 else 0))
         bvols.append(cb + (int(buy[i0:i1].sum()) if i1 > i0 else 0))
         svols.append(cs + (int(sell[i0:i1].sum()) if i1 > i0 else 0))
@@ -838,8 +914,15 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         span_start = i1
         d = direction
 
+    def close_partial(k: int) -> None:
+        # the forming brick closes as a partial at trade k, the last before a gap
+        last_p = pu[k]
+        form_open = anchor - d * (brick_u - trend_u)
+        direction = 1 if last_p >= form_open else -1
+        emit(last_p, direction, k, body=abs(last_p - form_open), partial=True)
+
     for k in walk:
-        p = prices[k]
+        p = pu[k]
         # session reset: close the FORMING bar as a partial at the last
         # pre-gap trade, then re-anchor the grid at this trade. The forming
         # bar's open is anchor - d*(B - T) (unique regardless of whether it
@@ -847,15 +930,12 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         # real ninZaRenko chart export.
         if k in gap_set:
             if d != 0:
-                last_p = prices[k - 1]
-                form_open = anchor - d * (brick - trend)
-                direction = 1 if last_p >= form_open else -1
-                emit(last_p, direction, k - 1,
-                     body=abs(last_p - form_open), partial=True)
+                close_partial(k - 1)
             anchor = p
             d = 0
             span_start = k
             pend = None     # an abandoned brick takes its carried part with it
+            pend_open = None
         # Breakouts are STRICT (`>` / `<`), matching ninZaRenko.cs
         # (`breakUp = close > upperLimit`): a close *exactly at* a threshold
         # updates the forming bar but does not emit a brick — price must
@@ -865,22 +945,37 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         if d == 0:                                   # no trend yet: T either way
             # first bar of a session: body = T, open = the anchor itself
             # (verified against a real ninZaRenko chart export)
-            if p > anchor + trend:
-                emit(anchor + trend, 1, k, body=trend)
-            elif p < anchor - trend:
-                emit(anchor - trend, -1, k, body=trend)
-        while d > 0 and (p > anchor + trend or p < anchor - rev):
-            if p > anchor + trend:
-                emit(anchor + trend, 1, k)
+            if p > anchor + trend_u:
+                emit(anchor + trend_u, 1, k, body=trend_u)
+            elif p < anchor - trend_u:
+                emit(anchor - trend_u, -1, k, body=trend_u)
+        while d > 0 and (p > anchor + trend_u or p < anchor - rev_u):
+            if p > anchor + trend_u:
+                emit(anchor + trend_u, 1, k)
             else:
-                emit(anchor - rev, -1, k)
-        while d < 0 and (p < anchor - trend or p > anchor + rev):
-            if p < anchor - trend:
-                emit(anchor - trend, -1, k)
+                emit(anchor - rev_u, -1, k)
+        while d < 0 and (p < anchor - trend_u or p > anchor + rev_u):
+            if p < anchor - trend_u:
+                emit(anchor - trend_u, -1, k)
             else:
-                emit(anchor + rev, 1, k)             # exits loop (d flipped)
-        while d > 0 and p > anchor + trend:          # ups after an up-reversal
-            emit(anchor + trend, 1, k)
+                emit(anchor + rev_u, 1, k)           # exits loop (d flipped)
+        while d > 0 and p > anchor + trend_u:        # ups after an up-reversal
+            emit(anchor + trend_u, 1, k)
+
+    # A file that ends more than the reset gap before the end of its own Eastern
+    # calendar day ends at a gap: whatever trades next (the Sunday reopen, the day
+    # after a holiday) is past the reset, so the forming brick is closed as a
+    # partial at the last trade, as NT8 does (the Friday 16:59:59 bar in the
+    # ninZaRenko exports). Without it that bar was lost at every weekend. Only
+    # with `close_at_eod` (the Catalog sets it: its files ARE whole Eastern days).
+    # A file that ends inside the last 30 minutes of its day, or outside its own
+    # day, is left alone: the caller's carry decides there.
+    if close_at_eod and d != 0 and n > 0:
+        day_start, day_end = _eastern_day_bounds_ns(day.date)
+        last_ts = int(day.ts[-1])
+        if day_start <= last_ts <= day_end - RENKO_RESET_GAP_NS:
+            close_partial(n - 1)
+            d = 0
 
     # the brick still forming at the end of the data: its events so far (plus the
     # part carried in, if it has not completed in this file) go out with it
@@ -890,12 +985,18 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
     t_sell = int(sell[span_start:n].sum()) if tail else 0
     t_hi = float(prices[span_start:n].max()) if tail else None
     t_lo = float(prices[span_start:n].min()) if tail else None
+    t_open = float(prices[span_start]) if tail else None
     if pend is not None:
-        cv, cb, cs, phi, plo = pend
+        cv, cb, cs, phi, plo = pend[:5]
         t_vol, t_buy, t_sell = t_vol + cv, t_buy + cb, t_sell + cs
         if phi is not None:
             t_hi = phi if t_hi is None else max(t_hi, phi)
             t_lo = plo if t_lo is None else min(t_lo, plo)
+        if pend_open is not None:
+            t_open = pend_open
+    end_state = (t_vol, t_buy, t_sell, t_hi, t_lo)
+    if real_open:
+        end_state += (t_open,)
 
     return BarDay(
         np.asarray(ts_end, dtype="int64"),
@@ -908,9 +1009,9 @@ def build_renko_bars(day: DayL1, brick: float, trend: float,
         np.asarray(svols, dtype="int64"),
         np.asarray(i0s, dtype="int64"),
         np.asarray(i1s, dtype="int64"),
-        end_anchor=anchor,
+        end_anchor=to_price(anchor),
         end_dir=d,
-        end_state=(t_vol, t_buy, t_sell, t_hi, t_lo),
+        end_state=end_state,
     )
 
 
